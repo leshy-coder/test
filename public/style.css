@@ -337,7 +337,7 @@ textarea { min-height: 90px; resize: vertical; }
 .features-list .item span { flex: 1; }
 
 /* ===== Drawer, Dialog, Toasts ===== */
-.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(420px, 92vw); background: var(--parchment); z-index: 50; box-shadow: -8px 0 30px rgba(0,0,0,.35); display: flex; flex-direction: column; border-left: 2px solid var(--antler); }
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(420px, 92vw); background: var(--parchment); z-index: 2000; box-shadow: -8px 0 30px rgba(0,0,0,.35); display: flex; flex-direction: column; border-left: 2px solid var(--antler); }
 .drawer-head { display: flex; justify-content: space-between; align-items: center; padding: .8rem 1rem; padding-top: calc(.8rem + env(safe-area-inset-top)); background: var(--forest); color: var(--antler-light); }
 .drawer-head h2 { color: var(--antler-light); margin: 0; }
 #notif-list { overflow: auto; padding: .6rem 1rem; }
@@ -347,7 +347,7 @@ textarea { min-height: 90px; resize: vertical; }
 .notif .when { font-size: .75rem; color: var(--ink-soft); }
 dialog { border: 2px solid var(--antler); border-radius: var(--radius); background: var(--parchment); color: var(--ink); padding: 1.2rem; width: min(520px, 94vw); max-height: 90vh; overflow: auto; box-shadow: 0 20px 60px rgba(0,0,0,.45); }
 dialog::backdrop { background: rgba(15,29,21,.6); }
-.toast-wrap { position: fixed; top: calc(70px + env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); z-index: 100; display: flex; flex-direction: column; gap: .4rem; pointer-events: none; }
+.toast-wrap { position: fixed; top: calc(70px + env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); z-index: 2100; display: flex; flex-direction: column; gap: .4rem; pointer-events: none; }
 .toast { background: var(--forest); color: var(--antler-light); padding: .6rem 1rem; border-radius: 10px; box-shadow: var(--shadow); font-weight: 600; font-size: .9rem; border-left: 4px solid var(--antler); animation: toast-in .3s; max-width: 90vw; }
 .toast.error { background: var(--danger); border-left-color: #fff; color: #fff; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(-10px); } }

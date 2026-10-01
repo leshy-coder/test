@@ -121,7 +121,7 @@ async function boot() {
 
 // ---------- Live-Updates: Abfrage der Versionszähler (überall) + WebSocket (nur lokaler Server) ----------
 let ws, wsTimer, wsFailures = 0, wsEverOpen = false, pollTimer, knownVersions = null;
-const loaders = { users: () => loadUsers(), revier: loadRevier, checkins: () => loadCheckins().then(loadNotifications), plans: () => loadPlans().then(loadNotifications), hunts: refreshHunts, sightings: () => loadSightings().then(loadNotifications), shots: () => loadShots().then(loadNotifications), areas: loadAreas, events: () => loadEvents().then(loadNotifications), incidents: () => loadIncidents().then(loadNotifications), contacts: loadContacts, tasks: loadTasks, harvest: loadHarvest };
+const loaders = { users: () => loadUsers(), revier: loadRevier, checkins: () => loadCheckins().then(loadNotifications), plans: () => loadPlans().then(loadNotifications), hunts: refreshHunts, sightings: () => loadSightings().then(loadNotifications), shots: () => loadShots().then(loadNotifications), areas: loadAreas, events: () => loadEvents().then(loadNotifications), incidents: () => loadIncidents().then(loadNotifications), contacts: () => loadContacts(), tasks: () => loadTasks(), harvest: () => loadHarvest() };
 function refreshHunts(data = {}) {
   return loadHunts().then(() => { if (state.hunt && (!data.hunt_id || data.hunt_id === state.hunt.id)) return loadHunt(state.hunt.id); }).then(loadNotifications);
 }
@@ -1307,7 +1307,11 @@ function renderHuntDetail() {
 async function loadSeasons() { try { const r = await api('/seasons'); state.seasons = r.seasons; state.seasonsNote = r.note; } catch {} }
 async function loadContacts() { state.contacts = await api('/contacts'); if (state.mehrPage === 'kontakte') renderMehr(); }
 async function loadTasks() { state.tasks = await api('/tasks'); if (state.mehrPage === 'arbeiten') renderMehr(); }
-async function loadHarvest(season) { state.harvest = await api('/harvest' + (season ? `?season=${encodeURIComponent(season)}` : (state.harvest ? `?season=${encodeURIComponent(state.harvest.season)}` : ''))); if (state.mehrPage === 'strecke') renderMehr(); }
+async function loadHarvest(season) {
+  const want = typeof season === 'string' && /^\d{4}\/\d{2}$/.test(season) ? season : state.harvest?.season;
+  state.harvest = await api('/harvest' + (want ? `?season=${encodeURIComponent(want)}` : ''));
+  if (state.mehrPage === 'strecke') renderMehr();
+}
 async function loadIncidents() { state.incidents = await api('/incidents'); scheduleRender(renderIncidentMarkers); if (state.mehrPage === 'vorfaelle') renderMehr(); }
 
 // Jagdzeiten

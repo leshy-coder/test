@@ -419,7 +419,7 @@ export function createApp({ onChange = () => {} } = {}) {
   const seasonOf = d => { const dt = new Date(d); const y = dt.getMonth() >= 3 ? dt.getFullYear() : dt.getFullYear() - 1; return `${y}/${String(y + 1).slice(2)}`; };
   app.get('/api/harvest', requireAuth, wrap(async (req, res) => {
     const db = await getDb();
-    const season = str(req.query.season, 10) || seasonOf(new Date());
+    const season = /^\d{4}\/\d{2}$/.test(req.query.season || '') ? req.query.season : seasonOf(new Date());
     const y = Number(season.slice(0, 4)); const from = `${y}-04-01`, to = `${y + 1}-03-31`;
     const rows = await db.all('SELECT h.*, u.name AS user_name FROM harvest h LEFT JOIN users u ON u.id = h.user_id WHERE h.date >= ? AND h.date <= ? ORDER BY h.date DESC, h.id DESC', [from, to]);
     const bag = await db.all('SELECT b.*, hu.title AS hunt_title, hu.date FROM hunt_bag b JOIN hunts hu ON hu.id = b.hunt_id WHERE hu.date >= ? AND hu.date <= ?', [from, to]);

@@ -262,6 +262,8 @@ test('Jagdzeiten, Streckenbuch und Abschussplan', async () => {
   await call('/harvest', { token: grete.token, body: { species: 'Rehwild – Bock', count: 2, date: d } });
   assert.equal((await call('/quota', { token: grete.token, method: 'PUT', body: { season: hv0.season, quota: [] } })).status, 403);
   await call('/quota', { token: hans.token, method: 'PUT', body: { season: hv0.season, quota: [{ species: 'Rehwild – Bock', target: 6 }] } });
+  const bad = (await call('/harvest?season=%5Bobject%20Object%5D', { token: grete.token })).data;
+  assert.equal(bad.season, hv0.season, 'ungültiges Jagdjahr fällt auf das aktuelle zurück');
   const hv = (await call(`/harvest?season=${encodeURIComponent(hv0.season)}`, { token: grete.token })).data;
   assert.equal(hv.entries.length, 2); assert.equal(hv.entries.reduce((a, e) => a + e.count, 0), 3); assert.equal(hv.quota[0].target, 6);
   const mine = hv.entries.find(e => e.user_id === hans.user.id);
