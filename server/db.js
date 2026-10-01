@@ -7,8 +7,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
+const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+export const DATA_DIR = process.env.DATA_DIR || path.join(moduleDir, '..', 'data');
 export const now = () => new Date().toISOString();
 
 const SCHEMA = `

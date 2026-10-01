@@ -9,7 +9,7 @@ import { getDb } from './db.js';
 import { userFromToken } from './auth.js';
 import { seedDemo } from './seed.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
 
 const wss = new WebSocketServer({ noServer: true });
@@ -19,8 +19,8 @@ function broadcast(type, data = {}) {
 }
 
 const app = createApp({ onChange: broadcast });
-app.use(express.static(path.join(__dirname, '..', 'public'), { etag: true, maxAge: 0 }));
-app.get(/^\/(?!api\/).*/, (req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'index.html')));
+app.use(express.static(path.join(moduleDir, '..', 'public'), { etag: true, maxAge: 0 }));
+app.get(/^\/(?!api\/).*/, (req, res) => res.sendFile(path.join(moduleDir, '..', 'public', 'index.html')));
 
 const server = http.createServer(app);
 server.on('upgrade', async (req, socket, head) => {
