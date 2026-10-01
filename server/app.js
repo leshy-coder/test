@@ -1,0 +1,393 @@
+/**
+ * Express-App der RevierApp. Läuft lokal/Render als normaler Server (server/index.js)
+ * und auf Netlify als Function (netlify/functions/api.js).
+ */
+import express from 'express';
+import { getDb, getSetting, setSetting, bump, versions, now } from './db.js';
+import { register, login, logout, requireAuth, requireAdmin, httpError, userCount, getInviteCode, setInviteCode, changePassword, setPassword } from './auth.js';
+import { getVapidKeys, saveSubscription, removeSubscription, notify } from './push.js';
+import { getWeather } from './weather.js';
+
+const wrap = fn => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+const str = (v, max = 500) => String(v ?? '').trim().slice(0, max);
+const num = v => (v === null || v === undefined || v === '' ? null : Number(v));
+const KINDS = ['kanzel', 'kamera', 'kirrung', 'sonstiges'];
+const ROLES = ['jagdleiter', 'schuetze', 'treiber', 'hundefuehrer', 'ansteller', 'helfer'];
+const HUNT_STATUS = ['planung', 'bestaetigt', 'abgeschlossen', 'abgesagt'];
+const ONLINE_WINDOW_MS = 45000;
+
+function fmtTime(iso) {
+  return new Date(iso).toLocaleString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: process.env.TZ || 'Europe/Berlin' });
+}
+
+/**
+ * @param {{ onChange?: (name: string, data?: object) => void }} opts  onChange wird nach jeder Änderung aufgerufen (lokal: WebSocket-Broadcast)
+ */
+export function createApp({ onChange = () => {} } = {}) {
+  const app = express();
+  app.set('trust proxy', true);
+  app.use(express.json({ limit: '2mb' }));
+
+  const changed = async (name, data = {}) => { await bump(name); onChange(name, data); };
+  const featureName = async (db, id) => id ? (await db.get('SELECT name FROM features WHERE id = ?', [id]))?.name || null : null;
+  const describeSpot = async (db, mode, featureId) => mode === 'pirsch' ? 'auf der Pirsch' : `auf ${(await featureName(db, featureId)) || 'einer Kanzel'}`;
+
+  // ---------- Health & Änderungsabfrage ----------
+  app.get('/api/health', wrap(async (req, res) => { await getDb(); res.json({ ok: true }); }));
+  app.get('/api/changes', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    await db.run('UPDATE users SET last_seen = ? WHERE id = ?', [now(), req.user.id]);
+    const since = new Date(Date.now() - ONLINE_WINDOW_MS).toISOString();
+    const online = await db.all('SELECT id, name, color FROM users WHERE last_seen > ? ORDER BY name', [since]);
+    res.json({ versions: await versions(), online });
+  }));
+
+  // ---------- Auth ----------
+  app.get('/api/auth/status', wrap(async (req, res) => res.json({ needsSetup: (await userCount()) === 0, hasInviteCode: !!(await getInviteCode()) })));
+  app.post('/api/auth/register', wrap(async (req, res) => { const r = await register(req.body.name, req.body.password, req.body.invite_code); await changed('users'); res.json(r); }));
+  app.post('/api/auth/login', wrap(async (req, res) => res.json(await login(req.body.name, req.body.password))));
+  app.post('/api/auth/logout', requireAuth, wrap(async (req, res) => { await logout(req.token); res.json({ ok: true }); }));
+  app.get('/api/auth/me', requireAuth, (req, res) => res.json(req.user));
+  app.post('/api/auth/password', requireAuth, wrap(async (req, res) => { await changePassword(req.user.id, req.body.old_password, req.body.new_password); res.json({ ok: true }); }));
+  app.get('/api/users', requireAuth, wrap(async (req, res) => { const db = await getDb(); res.json(await db.all('SELECT id, name, color, is_admin, created_at FROM users ORDER BY name')); }));
+
+  // ---------- Admin ----------
+  app.get('/api/admin/invite', requireAuth, requireAdmin, wrap(async (req, res) => res.json({ code: await getInviteCode(), fromEnv: !!process.env.INVITE_CODE })));
+  app.put('/api/admin/invite', requireAuth, requireAdmin, wrap(async (req, res) => {
+    if (process.env.INVITE_CODE) throw httpError(400, 'Der Code ist per Umgebungsvariable INVITE_CODE festgelegt.');
+    await setInviteCode(req.body.code); res.json({ ok: true });
+  }));
+  app.post('/api/admin/users/:id/reset-password', requireAuth, requireAdmin, wrap(async (req, res) => {
+    const db = await getDb();
+    const u = await db.get('SELECT id, name FROM users WHERE id = ?', [req.params.id]);
+    if (!u) throw httpError(404, 'Nutzer nicht gefunden.');
+    const temp = Math.random().toString(36).slice(2, 8);
+    await setPassword(u.id, temp);
+    res.json({ ok: true, name: u.name, password: temp });
+  }));
+  app.put('/api/admin/users/:id/admin', requireAuth, requireAdmin, wrap(async (req, res) => {
+    if (Number(req.params.id) === req.user.id && !req.body.is_admin) throw httpError(400, 'Du kannst dir selbst die Admin-Rechte nicht entziehen.');
+    const db = await getDb();
+    await db.run('UPDATE users SET is_admin = ? WHERE id = ?', [req.body.is_admin ? 1 : 0, req.params.id]);
+    await changed('users'); res.json({ ok: true });
+  }));
+  app.delete('/api/admin/users/:id', requireAuth, requireAdmin, wrap(async (req, res) => {
+    if (Number(req.params.id) === req.user.id) throw httpError(400, 'Du kannst dich nicht selbst löschen.');
+    const db = await getDb();
+    await db.run('DELETE FROM users WHERE id = ?', [req.params.id]);
+    await changed('users'); await changed('checkins'); await changed('plans');
+    res.json({ ok: true });
+  }));
+
+  // ---------- Push ----------
+  app.get('/api/push/key', wrap(async (req, res) => res.json({ publicKey: (await getVapidKeys()).publicKey })));
+  app.post('/api/push/subscribe', requireAuth, wrap(async (req, res) => { await saveSubscription(req.user.id, req.body); res.json({ ok: true }); }));
+  app.post('/api/push/unsubscribe', requireAuth, wrap(async (req, res) => { await removeSubscription(str(req.body.endpoint, 2000)); res.json({ ok: true }); }));
+  app.post('/api/push/test', requireAuth, wrap(async (req, res) => {
+    await notify([req.user.id], { title: 'Waidmannsheil!', body: 'Push-Benachrichtigungen funktionieren.', url: '/' });
+    res.json({ ok: true });
+  }));
+
+  // ---------- Benachrichtigungen ----------
+  app.get('/api/notifications', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    res.json(await db.all('SELECT * FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT 50', [req.user.id]));
+  }));
+  app.post('/api/notifications/read', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    await db.run('UPDATE notifications SET read = 1 WHERE user_id = ?', [req.user.id]); res.json({ ok: true });
+  }));
+
+  // ---------- Revier ----------
+  app.get('/api/revier', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    res.json({
+      name: await getSetting('revier_name', 'Mein Revier'),
+      center: await getSetting('center', { lat: 51.1657, lng: 10.4515, zoom: 6 }),
+      boundaries: (await db.all('SELECT * FROM boundaries ORDER BY id')).map(b => ({ ...b, geojson: JSON.parse(b.geojson) })),
+      features: await db.all('SELECT * FROM features ORDER BY kind, name'),
+    });
+  }));
+  app.put('/api/revier/settings', requireAuth, wrap(async (req, res) => {
+    if (req.body.name !== undefined) await setSetting('revier_name', str(req.body.name, 80) || 'Mein Revier');
+    if (req.body.center) await setSetting('center', { lat: Number(req.body.center.lat), lng: Number(req.body.center.lng), zoom: Number(req.body.center.zoom || 13) });
+    await changed('revier'); res.json({ ok: true });
+  }));
+
+  app.post('/api/boundaries', requireAuth, wrap(async (req, res) => {
+    const geo = req.body.geojson;
+    if (!geo || geo.type !== 'Feature') throw httpError(400, 'Ungültige Geometrie.');
+    const db = await getDb();
+    const id = await db.insert('INSERT INTO boundaries (name, geojson, updated_by, updated_at) VALUES (?, ?, ?, ?)', [str(req.body.name, 80) || 'Reviergrenze', JSON.stringify(geo), req.user.id, now()]);
+    await changed('revier'); res.json({ id });
+  }));
+  app.put('/api/boundaries/:id', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const b = await db.get('SELECT * FROM boundaries WHERE id = ?', [req.params.id]);
+    if (!b) throw httpError(404, 'Nicht gefunden.');
+    await db.run('UPDATE boundaries SET geojson = ?, name = ?, updated_by = ?, updated_at = ? WHERE id = ?',
+      [req.body.geojson ? JSON.stringify(req.body.geojson) : b.geojson, req.body.name !== undefined ? str(req.body.name, 80) : b.name, req.user.id, now(), b.id]);
+    await changed('revier'); res.json({ ok: true });
+  }));
+  app.delete('/api/boundaries/:id', requireAuth, wrap(async (req, res) => {
+    const db = await getDb(); await db.run('DELETE FROM boundaries WHERE id = ?', [req.params.id]);
+    await changed('revier'); res.json({ ok: true });
+  }));
+
+  app.post('/api/features', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const kind = KINDS.includes(req.body.kind) ? req.body.kind : 'sonstiges';
+    const lat = num(req.body.lat), lng = num(req.body.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) throw httpError(400, 'Position fehlt.');
+    let name = str(req.body.name, 80);
+    if (!name) {
+      const c = Number((await db.get('SELECT COUNT(*) AS c FROM features WHERE kind = ?', [kind])).c) + 1;
+      name = { kanzel: `Kanzel ${c}`, kamera: `Wildkamera ${c}`, kirrung: `Kirrung ${c}`, sonstiges: `Punkt ${c}` }[kind];
+    }
+    const id = await db.insert('INSERT INTO features (kind, name, lat, lng, notes, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [kind, name, lat, lng, str(req.body.notes, 1000), req.user.id, now()]);
+    await changed('revier'); res.json(await db.get('SELECT * FROM features WHERE id = ?', [id]));
+  }));
+  app.put('/api/features/:id', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const f = await db.get('SELECT * FROM features WHERE id = ?', [req.params.id]);
+    if (!f) throw httpError(404, 'Nicht gefunden.');
+    await db.run('UPDATE features SET name = ?, notes = ?, lat = ?, lng = ?, kind = ? WHERE id = ?', [
+      str(req.body.name ?? f.name, 80) || f.name, str(req.body.notes ?? f.notes, 1000), num(req.body.lat) ?? f.lat, num(req.body.lng) ?? f.lng,
+      KINDS.includes(req.body.kind) ? req.body.kind : f.kind, f.id]);
+    await changed('revier'); res.json(await db.get('SELECT * FROM features WHERE id = ?', [f.id]));
+  }));
+  app.delete('/api/features/:id', requireAuth, wrap(async (req, res) => {
+    const db = await getDb(); await db.run('DELETE FROM features WHERE id = ?', [req.params.id]);
+    await changed('revier'); res.json({ ok: true });
+  }));
+
+  // ---------- Wetter ----------
+  app.get('/api/weather', requireAuth, wrap(async (req, res) => {
+    const center = await getSetting('center', { lat: 51.1657, lng: 10.4515 });
+    res.json(await getWeather(num(req.query.lat) ?? center.lat, num(req.query.lng) ?? center.lng));
+  }));
+
+  // ---------- Check-ins ----------
+  const CHECKIN_SELECT = `SELECT c.*, u.name AS user_name, u.color AS user_color, f.name AS feature_name, f.lat, f.lng
+    FROM checkins c JOIN users u ON u.id = c.user_id LEFT JOIN features f ON f.id = c.feature_id`;
+  app.get('/api/checkins', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    res.json({
+      active: await db.all(`${CHECKIN_SELECT} WHERE c.ended_at IS NULL ORDER BY c.started_at DESC`),
+      history: await db.all(`${CHECKIN_SELECT} WHERE c.ended_at IS NOT NULL ORDER BY c.started_at DESC LIMIT 40`),
+    });
+  }));
+  app.post('/api/checkins', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const mode = req.body.mode === 'kanzel' ? 'kanzel' : 'pirsch';
+    const featureId = mode === 'kanzel' ? num(req.body.feature_id) : null;
+    if (mode === 'kanzel' && !featureId) throw httpError(400, 'Bitte eine Kanzel wählen.');
+    await db.run('UPDATE checkins SET ended_at = ? WHERE user_id = ? AND ended_at IS NULL', [now(), req.user.id]);
+    const id = await db.insert('INSERT INTO checkins (user_id, mode, feature_id, note, started_at) VALUES (?, ?, ?, ?, ?)', [req.user.id, mode, featureId, str(req.body.note, 300), now()]);
+    if (req.body.plan_id) await db.run("UPDATE plans SET status = 'gestartet' WHERE id = ? AND user_id = ?", [req.body.plan_id, req.user.id]);
+    await changed('checkins'); await changed('plans');
+    const spot = await describeSpot(db, mode, featureId);
+    await notify('all', { title: `${req.user.name} ist im Revier`, body: `${req.user.name} ist jetzt ${spot}.${req.body.note ? ' – ' + str(req.body.note, 100) : ''}`, url: '/#karte', tag: 'checkin' }, req.user.id);
+    res.json(await db.get('SELECT * FROM checkins WHERE id = ?', [id]));
+  }));
+  app.post('/api/checkins/checkout', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const active = await db.get('SELECT * FROM checkins WHERE user_id = ? AND ended_at IS NULL', [req.user.id]);
+    if (!active) return res.json({ ok: true });
+    await db.run('UPDATE checkins SET ended_at = ? WHERE id = ?', [now(), active.id]);
+    await changed('checkins');
+    await notify('all', { title: `${req.user.name} hat das Revier verlassen`, body: `${req.user.name} war ${await describeSpot(db, active.mode, active.feature_id)} und hat ausgecheckt.`, url: '/#karte', tag: 'checkout' }, req.user.id);
+    res.json({ ok: true });
+  }));
+
+  // ---------- Angekündigte Ansitze ----------
+  async function planWithReceipts(db, id) {
+    const p = await db.get(`SELECT p.*, u.name AS user_name, u.color AS user_color, f.name AS feature_name
+      FROM plans p JOIN users u ON u.id = p.user_id LEFT JOIN features f ON f.id = p.feature_id WHERE p.id = ?`, [id]);
+    if (!p) return null;
+    p.receipts = await db.all('SELECT r.*, u.name AS user_name, u.color AS user_color FROM plan_receipts r JOIN users u ON u.id = r.user_id WHERE r.plan_id = ? ORDER BY u.name', [id]);
+    return p;
+  }
+  app.get('/api/plans', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const h12 = new Date(Date.now() - 12 * 3600e3).toISOString(), d2 = new Date(Date.now() - 48 * 3600e3).toISOString();
+    const ids = await db.all("SELECT id FROM plans WHERE (status = 'offen' AND planned_at > ?) OR created_at > ? ORDER BY planned_at", [h12, d2]);
+    res.json(await Promise.all(ids.map(r => planWithReceipts(db, r.id))));
+  }));
+  app.post('/api/plans', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const mode = req.body.mode === 'kanzel' ? 'kanzel' : 'pirsch';
+    const featureId = mode === 'kanzel' ? num(req.body.feature_id) : null;
+    if (mode === 'kanzel' && !featureId) throw httpError(400, 'Bitte eine Kanzel wählen.');
+    const plannedAt = new Date(req.body.planned_at);
+    if (Number.isNaN(plannedAt.getTime())) throw httpError(400, 'Ungültige Uhrzeit.');
+    const planId = await db.insert('INSERT INTO plans (user_id, mode, feature_id, planned_at, note, created_at) VALUES (?, ?, ?, ?, ?, ?)', [req.user.id, mode, featureId, plannedAt.toISOString(), str(req.body.note, 300), now()]);
+    const others = (await db.all('SELECT id FROM users WHERE id != ?', [req.user.id])).map(r => r.id);
+    for (const uid of others) await db.run('INSERT INTO plan_receipts (plan_id, user_id) VALUES (?, ?)', [planId, uid]);
+    await changed('plans');
+    await notify(others, { title: `Ansitz angekündigt: ${req.user.name}`, body: `${req.user.name} möchte ${fmtTime(plannedAt)} ${await describeSpot(db, mode, featureId)} sein. Bitte bestätigen.`, url: `/#plan-${planId}`, tag: `plan-${planId}` });
+    res.json(await planWithReceipts(db, planId));
+  }));
+  app.post('/api/plans/:id/read', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const plan = await db.get('SELECT * FROM plans WHERE id = ?', [req.params.id]);
+    if (!plan || plan.user_id === req.user.id) return res.json({ ok: true });
+    const r = await db.run('UPDATE plan_receipts SET read_at = ? WHERE plan_id = ? AND user_id = ? AND read_at IS NULL', [now(), plan.id, req.user.id]);
+    if (r.changes) await changed('plans', { plan_id: plan.id });
+    res.json({ ok: true });
+  }));
+  app.post('/api/plans/:id/confirm', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const plan = await db.get('SELECT * FROM plans WHERE id = ?', [req.params.id]);
+    if (!plan) throw httpError(404, 'Nicht gefunden.');
+    if (plan.user_id === req.user.id) throw httpError(400, 'Eigene Ankündigung kann nicht bestätigt werden.');
+    const ts = now();
+    await db.run(`INSERT INTO plan_receipts (plan_id, user_id, read_at, confirmed_at, comment) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT (plan_id, user_id) DO UPDATE SET read_at = COALESCE(plan_receipts.read_at, excluded.read_at), confirmed_at = excluded.confirmed_at, comment = excluded.comment`,
+      [plan.id, req.user.id, ts, ts, str(req.body.comment, 200)]);
+    await changed('plans', { plan_id: plan.id });
+    await notify([plan.user_id], { title: `${req.user.name} hat bestätigt`, body: `${req.user.name} hat deine Ankündigung für ${fmtTime(plan.planned_at)} bestätigt.${req.body.comment ? ' „' + str(req.body.comment, 100) + '“' : ''}`, url: `/#plan-${plan.id}`, tag: `plan-${plan.id}-confirm` });
+    res.json(await planWithReceipts(db, plan.id));
+  }));
+  app.post('/api/plans/:id/cancel', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const plan = await db.get('SELECT * FROM plans WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+    if (!plan) throw httpError(404, 'Nicht gefunden.');
+    await db.run("UPDATE plans SET status = 'abgesagt' WHERE id = ?", [plan.id]);
+    await changed('plans');
+    await notify('all', { title: `Ansitz abgesagt: ${req.user.name}`, body: `${req.user.name} hat den geplanten Ansitz ${fmtTime(plan.planned_at)} abgesagt.`, url: '/#ansitz', tag: `plan-${plan.id}` }, req.user.id);
+    res.json({ ok: true });
+  }));
+
+  // ---------- Drückjagd ----------
+  async function huntFull(db, id) {
+    const h = await db.get('SELECT h.*, u.name AS created_by_name FROM hunts h LEFT JOIN users u ON u.id = h.created_by WHERE h.id = ?', [id]);
+    if (!h) return null;
+    h.participants = await db.all('SELECT p.*, f.name AS feature_name FROM hunt_participants p LEFT JOIN features f ON f.id = p.feature_id WHERE hunt_id = ? ORDER BY role, name', [id]);
+    h.drives = (await db.all('SELECT * FROM hunt_drives WHERE hunt_id = ? ORDER BY start_time, id', [id])).map(d => ({ ...d, geojson: d.geojson ? JSON.parse(d.geojson) : null }));
+    h.tasks = await db.all('SELECT * FROM hunt_tasks WHERE hunt_id = ? ORDER BY done, id', [id]);
+    h.bag = await db.all('SELECT * FROM hunt_bag WHERE hunt_id = ? ORDER BY id', [id]);
+    return h;
+  }
+  const huntRes = (db, id) => async (req, res) => { await changed('hunts', { hunt_id: Number(id) }); res.json(await huntFull(db, id)); };
+
+  app.get('/api/hunts', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    res.json(await db.all('SELECT h.*, (SELECT CAST(COUNT(*) AS INTEGER) FROM hunt_participants p WHERE p.hunt_id = h.id) AS participant_count FROM hunts h ORDER BY date DESC'));
+  }));
+  app.get('/api/hunts/:id', requireAuth, wrap(async (req, res) => {
+    const h = await huntFull(await getDb(), req.params.id);
+    if (!h) throw httpError(404, 'Nicht gefunden.');
+    res.json(h);
+  }));
+  app.post('/api/hunts', requireAuth, wrap(async (req, res) => {
+    if (!str(req.body.title, 120)) throw httpError(400, 'Titel fehlt.');
+    if (!str(req.body.date, 20)) throw httpError(400, 'Datum fehlt.');
+    const db = await getDb();
+    const id = await db.insert('INSERT INTO hunts (title, date, meet_time, meet_point, leader, description, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [str(req.body.title, 120), str(req.body.date, 20), str(req.body.meet_time, 20), str(req.body.meet_point, 200), str(req.body.leader, 80), str(req.body.description, 4000), req.user.id, now()]);
+    for (const t of ['Einladungen verschicken', 'Stände kontrollieren und freischneiden', 'Jagdleiter-Belehrung vorbereiten', 'Hundeführer organisieren', 'Streckenplatz und Wildwanne vorbereiten', 'Behörde / Straßenschilder (Vorsicht Treibjagd) beantragen', 'Verpflegung (Schüsseltreiben) planen']) {
+      await db.run('INSERT INTO hunt_tasks (hunt_id, text) VALUES (?, ?)', [id, t]);
+    }
+    await changed('hunts');
+    await notify('all', { title: 'Neue Drückjagd geplant', body: `${req.user.name} hat „${str(req.body.title, 120)}“ am ${req.body.date} angelegt.`, url: `/#jagd-${id}`, tag: `hunt-${id}` }, req.user.id);
+    res.json(await huntFull(db, id));
+  }));
+  app.put('/api/hunts/:id', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const h = await db.get('SELECT * FROM hunts WHERE id = ?', [req.params.id]);
+    if (!h) throw httpError(404, 'Nicht gefunden.');
+    await db.run('UPDATE hunts SET title = ?, date = ?, meet_time = ?, meet_point = ?, leader = ?, description = ?, status = ? WHERE id = ?', [
+      str(req.body.title ?? h.title, 120) || h.title, str(req.body.date ?? h.date, 20) || h.date, str(req.body.meet_time ?? h.meet_time, 20), str(req.body.meet_point ?? h.meet_point, 200),
+      str(req.body.leader ?? h.leader, 80), str(req.body.description ?? h.description, 4000), HUNT_STATUS.includes(req.body.status) ? req.body.status : h.status, h.id]);
+    await huntRes(db, h.id)(req, res);
+  }));
+  app.delete('/api/hunts/:id', requireAuth, wrap(async (req, res) => {
+    const db = await getDb(); await db.run('DELETE FROM hunts WHERE id = ?', [req.params.id]);
+    await changed('hunts'); res.json({ ok: true });
+  }));
+
+  app.post('/api/hunts/:id/participants', requireAuth, wrap(async (req, res) => {
+    if (!str(req.body.name, 80)) throw httpError(400, 'Name fehlt.');
+    const db = await getDb();
+    await db.run('INSERT INTO hunt_participants (hunt_id, name, role, feature_id, drive_id, phone, confirmed, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [req.params.id, str(req.body.name, 80), ROLES.includes(req.body.role) ? req.body.role : 'schuetze', num(req.body.feature_id), num(req.body.drive_id), str(req.body.phone, 40), req.body.confirmed ? 1 : 0, str(req.body.notes, 500)]);
+    await huntRes(db, req.params.id)(req, res);
+  }));
+  app.put('/api/hunts/:id/participants/:pid', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const p = await db.get('SELECT * FROM hunt_participants WHERE id = ? AND hunt_id = ?', [req.params.pid, req.params.id]);
+    if (!p) throw httpError(404, 'Nicht gefunden.');
+    await db.run('UPDATE hunt_participants SET name = ?, role = ?, feature_id = ?, drive_id = ?, phone = ?, confirmed = ?, notes = ? WHERE id = ?', [
+      str(req.body.name ?? p.name, 80) || p.name, ROLES.includes(req.body.role) ? req.body.role : p.role,
+      'feature_id' in req.body ? num(req.body.feature_id) : p.feature_id, 'drive_id' in req.body ? num(req.body.drive_id) : p.drive_id,
+      str(req.body.phone ?? p.phone, 40), 'confirmed' in req.body ? (req.body.confirmed ? 1 : 0) : p.confirmed, str(req.body.notes ?? p.notes, 500), p.id]);
+    await huntRes(db, req.params.id)(req, res);
+  }));
+  app.delete('/api/hunts/:id/participants/:pid', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    await db.run('DELETE FROM hunt_participants WHERE id = ? AND hunt_id = ?', [req.params.pid, req.params.id]);
+    await huntRes(db, req.params.id)(req, res);
+  }));
+
+  app.post('/api/hunts/:id/drives', requireAuth, wrap(async (req, res) => {
+    if (!str(req.body.name, 80)) throw httpError(400, 'Name fehlt.');
+    const db = await getDb();
+    await db.run('INSERT INTO hunt_drives (hunt_id, name, start_time, end_time, geojson, notes) VALUES (?, ?, ?, ?, ?, ?)',
+      [req.params.id, str(req.body.name, 80), str(req.body.start_time, 10), str(req.body.end_time, 10), req.body.geojson ? JSON.stringify(req.body.geojson) : null, str(req.body.notes, 1000)]);
+    await huntRes(db, req.params.id)(req, res);
+  }));
+  app.put('/api/hunts/:id/drives/:did', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const d = await db.get('SELECT * FROM hunt_drives WHERE id = ? AND hunt_id = ?', [req.params.did, req.params.id]);
+    if (!d) throw httpError(404, 'Nicht gefunden.');
+    await db.run('UPDATE hunt_drives SET name = ?, start_time = ?, end_time = ?, geojson = ?, notes = ? WHERE id = ?', [
+      str(req.body.name ?? d.name, 80) || d.name, str(req.body.start_time ?? d.start_time, 10), str(req.body.end_time ?? d.end_time, 10),
+      'geojson' in req.body ? (req.body.geojson ? JSON.stringify(req.body.geojson) : null) : d.geojson, str(req.body.notes ?? d.notes, 1000), d.id]);
+    await huntRes(db, req.params.id)(req, res);
+  }));
+  app.delete('/api/hunts/:id/drives/:did', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    await db.run('DELETE FROM hunt_drives WHERE id = ? AND hunt_id = ?', [req.params.did, req.params.id]);
+    await db.run('UPDATE hunt_participants SET drive_id = NULL WHERE drive_id = ?', [req.params.did]);
+    await huntRes(db, req.params.id)(req, res);
+  }));
+
+  app.post('/api/hunts/:id/tasks', requireAuth, wrap(async (req, res) => {
+    if (!str(req.body.text, 200)) throw httpError(400, 'Text fehlt.');
+    const db = await getDb();
+    await db.run('INSERT INTO hunt_tasks (hunt_id, text, assignee) VALUES (?, ?, ?)', [req.params.id, str(req.body.text, 200), str(req.body.assignee, 80)]);
+    await huntRes(db, req.params.id)(req, res);
+  }));
+  app.put('/api/hunts/:id/tasks/:tid', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const t = await db.get('SELECT * FROM hunt_tasks WHERE id = ? AND hunt_id = ?', [req.params.tid, req.params.id]);
+    if (!t) throw httpError(404, 'Nicht gefunden.');
+    await db.run('UPDATE hunt_tasks SET text = ?, done = ?, assignee = ? WHERE id = ?', [str(req.body.text ?? t.text, 200) || t.text, 'done' in req.body ? (req.body.done ? 1 : 0) : t.done, str(req.body.assignee ?? t.assignee, 80), t.id]);
+    await huntRes(db, req.params.id)(req, res);
+  }));
+  app.delete('/api/hunts/:id/tasks/:tid', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    await db.run('DELETE FROM hunt_tasks WHERE id = ? AND hunt_id = ?', [req.params.tid, req.params.id]);
+    await huntRes(db, req.params.id)(req, res);
+  }));
+
+  app.post('/api/hunts/:id/bag', requireAuth, wrap(async (req, res) => {
+    if (!str(req.body.species, 80)) throw httpError(400, 'Wildart fehlt.');
+    const db = await getDb();
+    await db.run('INSERT INTO hunt_bag (hunt_id, species, count, shooter, notes) VALUES (?, ?, ?, ?, ?)', [req.params.id, str(req.body.species, 80), Math.max(1, Number(req.body.count) || 1), str(req.body.shooter, 80), str(req.body.notes, 300)]);
+    await huntRes(db, req.params.id)(req, res);
+  }));
+  app.delete('/api/hunts/:id/bag/:bid', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    await db.run('DELETE FROM hunt_bag WHERE id = ? AND hunt_id = ?', [req.params.bid, req.params.id]);
+    await huntRes(db, req.params.id)(req, res);
+  }));
+
+  app.use('/api', (req, res) => res.status(404).json({ error: 'Unbekannter Endpunkt.' }));
+  app.use((err, req, res, next) => {
+    if (!err.status) console.error(err);
+    res.status(err.status || 500).json({ error: err.status ? err.message : 'Interner Fehler.' });
+  });
+  return app;
+}

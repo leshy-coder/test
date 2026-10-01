@@ -94,37 +94,57 @@ async function boot() {
   await Promise.all([loadRevier(), loadUsers(), loadCheckins(), loadPlans(), loadHunts(), loadNotifications()]);
   loadWeather();
   connectWs();
+  startPolling();
   registerSw();
   routeFromHash();
   setInterval(() => { if (state.view === 'karte') renderActive(); }, 60000);
   setInterval(loadWeather, 15 * 60 * 1000);
 }
 
-// ---------- WebSocket ----------
-let ws, wsTimer;
+// ---------- Live-Updates: Abfrage der Versionszähler (überall) + WebSocket (nur lokaler Server) ----------
+let ws, wsTimer, wsFailures = 0, wsEverOpen = false, pollTimer, knownVersions = null;
+const loaders = { users: () => loadUsers(), revier: loadRevier, checkins: () => loadCheckins().then(loadNotifications), plans: () => loadPlans().then(loadNotifications), hunts: refreshHunts };
+function refreshHunts(data = {}) {
+  return loadHunts().then(() => { if (state.hunt && (!data.hunt_id || data.hunt_id === state.hunt.id)) return loadHunt(state.hunt.id); }).then(loadNotifications);
+}
+async function poll() {
+  if (document.hidden || !state.token) return;
+  try {
+    const r = await api('/changes');
+    state.online = r.online; renderOnline();
+    if (knownVersions) {
+      for (const [name, v] of Object.entries(r.versions)) if (knownVersions[name] !== v && loaders[name]) loaders[name]({});
+    }
+    knownVersions = r.versions;
+    setStatus(ws && ws.readyState === 1 ? 'Live verbunden' : 'Verbunden');
+  } catch (e) { setStatus('Keine Verbindung'); }
+}
+function startPolling() {
+  clearInterval(pollTimer);
+  poll();
+  pollTimer = setInterval(poll, ws && ws.readyState === 1 ? 30000 : 10000);
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) startPolling(); });
 function connectWs() {
   if (ws) ws.close();
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${location.host}/ws?token=${state.token}`);
+  try { ws = new WebSocket(`${proto}://${location.host}/ws?token=${state.token}`); } catch { ws = null; return; }
   ws.onmessage = ev => {
     const msg = JSON.parse(ev.data);
-    switch (msg.type) {
-      case 'presence': state.online = msg.data.online; renderOnline(); break;
-      case 'revier': loadRevier(); break;
-      case 'users': loadUsers().then(() => { if (state.view === 'mehr') renderSettings(); }); break;
-      case 'checkins': loadCheckins(); loadNotifications(); break;
-      case 'plans': loadPlans(); loadNotifications(); break;
-      case 'hunts': loadHunts(); if (state.hunt && (!msg.data.hunt_id || msg.data.hunt_id === state.hunt.id)) loadHunt(state.hunt.id); loadNotifications(); break;
-    }
+    if (loaders[msg.type]) loaders[msg.type](msg.data || {});
+    if (msg.type === 'users' && state.view === 'mehr') loadUsers().then(renderSettings);
   };
-  ws.onclose = () => { clearTimeout(wsTimer); wsTimer = setTimeout(connectWs, 3000); setStatus('Verbindung getrennt – verbinde neu …'); };
-  ws.onopen = () => setStatus('Verbunden');
+  ws.onopen = () => { wsEverOpen = true; wsFailures = 0; startPolling(); };
+  ws.onclose = () => {
+    wsFailures++;
+    if (!wsEverOpen && wsFailures >= 2) { ws = null; startPolling(); return; } // Hosting ohne WebSocket (z. B. Netlify): nur Abfrage
+    clearTimeout(wsTimer); wsTimer = setTimeout(connectWs, 3000); startPolling();
+  };
 }
 function setStatus(t) { $('#topbar-status').textContent = t; }
 function renderOnline() {
   $('#online-users').innerHTML = state.online.filter(u => u.id !== state.me.id).map(u => avatar(u)).join('');
-  const n = state.online.length;
-  setStatus(`${n} online · ${state.checkins.active.length} im Revier`);
+  setStatus(`${state.online.length} online · ${state.checkins.active.length} im Revier`);
 }
 
 // ---------- Navigation ----------

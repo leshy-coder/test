@@ -60,8 +60,9 @@ Demodaten verwenden den Einladungscode `demo`.
 | Variable | Bedeutung | Standard |
 |---|---|---|
 | `PORT` | HTTP-Port | `3000` |
-| `DATA_DIR` | Verzeichnis für SQLite-Datenbank und VAPID-Schlüssel | `./data` |
-| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Eigene Web-Push-Schlüssel (werden sonst beim ersten Start erzeugt) | automatisch |
+| `DATA_DIR` | Verzeichnis für die SQLite-Datenbank | `./data` |
+| `DATABASE_URL` / `NETLIFY_DATABASE_URL` | Postgres-Verbindung; wenn gesetzt, wird Postgres statt SQLite genutzt | – |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Eigene Web-Push-Schlüssel (werden sonst beim ersten Start erzeugt und in der Datenbank abgelegt) | automatisch |
 | `INVITE_CODE` | Fester Einladungscode; sonst legt ihn der erste Nutzer fest | – |
 | `VAPID_SUBJECT` | Kontakt für Push-Dienste, z. B. `mailto:ich@example.com` | `mailto:revier@example.com` |
 | `TZ` | Zeitzone für Push-Texte | `Europe/Berlin` |
@@ -78,9 +79,22 @@ docker run -p 3000:3000 -v revierdaten:/app/data revierapp
 
 ## Veröffentlichen (Hosting)
 
-Die App braucht einen dauerhaft laufenden Node-Server (WebSockets, SQLite-Datei). Reine Static-Hoster wie Netlify oder GitHub Pages reichen dafür nicht. Zwei vorbereitete Wege:
+Die App läuft auf zwei Arten: als dauerhafter Node-Server (lokal, Render, Fly.io, Docker; SQLite-Datei, WebSocket für sofortige Updates) oder serverlos auf Netlify (Netlify Function + Postgres-Datenbank, Live-Updates per Abfrage alle 10 Sekunden). Drei vorbereitete Wege:
 
-### Render (empfohlen, wenige Klicks)
+### Netlify (kostenlos, serverlos)
+
+1. Auf https://app.netlify.com anmelden (GitHub-Login reicht).
+2. „Add new project“ → „Import an existing project“ → GitHub → Repository `leshy-coder/test` wählen.
+3. Branch `claude/revierapp` einstellen. Build-Befehl und Veröffentlichungsordner liest Netlify aus `netlify.toml`, nichts weiter ändern. „Deploy“ klicken.
+4. **Datenbank anlegen** (einmalig): Im Projekt auf „Extensions“ → „Neon“ (Netlify DB) → „Install“ → „Add database“. Netlify legt eine kostenlose Postgres-Datenbank an und setzt die Variable `NETLIFY_DATABASE_URL` automatisch. Danach unter „Deploys“ → „Trigger deploy“ einmal neu deployen.
+   Alternative: kostenlose Datenbank auf https://neon.tech anlegen und die Verbindungs-URL unter „Site configuration“ → „Environment variables“ als `DATABASE_URL` eintragen.
+5. Optional unter „Environment variables“ setzen: `VAPID_SUBJECT` (`mailto:deine@mail.de`), `TZ` (`Europe/Berlin`), `INVITE_CODE` (fester Einladungscode).
+6. Die App ist unter `https://<name>.netlify.app` erreichbar, mit HTTPS, also Push-fähig. Der erste Aufruf richtet das Revier ein (Einladungscode festlegen, Admin).
+
+Hinweise: Die Push-Schlüssel werden beim ersten Aufruf erzeugt und in der Datenbank gespeichert. Eine über Netlify DB angelegte Datenbank muss innerhalb von 7 Tagen über den Button „Claim database“ in ein kostenloses Neon-Konto übernommen werden, sonst wird sie gelöscht. Der kostenlose Netlify-Tarif umfasst rund 125.000 Function-Aufrufe im Monat. Die App fragt nur bei geöffnetem Bildschirm alle 10 Sekunden nach Änderungen, das reicht für eine Jagdgemeinschaft gut aus. Push-Nachrichten kommen unabhängig davon sofort an.
+
+
+### Render (Node-Server mit Disk)
 
 1. Auf https://render.com anmelden und GitHub verbinden.
 2. „New +“ → „Blueprint“ → dieses Repository und den Branch wählen. Render liest `render.yaml`.
@@ -114,10 +128,11 @@ fly open
 npm test
 ```
 
-Die Tests starten den Server mit einer temporären Datenbank und prüfen Registrierung, Revierobjekte, Ein-/Auschecken mit Benachrichtigungen, Ankündigungen mit Lese-/Bestätigungsquittung, Drückjagd-Planung und Push-Abonnements.
+Mit gesetzter `DATABASE_URL` laufen dieselben Tests gegen Postgres. Die Tests starten den Server mit einer temporären Datenbank und prüfen Registrierung, Revierobjekte, Ein-/Auschecken mit Benachrichtigungen, Ankündigungen mit Lese-/Bestätigungsquittung, Drückjagd-Planung und Push-Abonnements.
 
 ## Technik
 
-- Backend: Node.js, Express, `node:sqlite`, `ws`, `web-push`
+- Backend: Node.js, Express, `web-push`; Datenbank wahlweise `node:sqlite` (lokal) oder Postgres (`@netlify/neon` bzw. `pg`); lokal zusätzlich `ws` für sofortige Updates
+- Netlify: `netlify/functions/api.js` kapselt dieselbe Express-App über `serverless-http`; Konfiguration in `netlify.toml`
 - Frontend: Vanilla JS (ES-Modul), Leaflet + Leaflet.draw (lokal eingebunden), Service Worker
 - Karten: OpenTopoMap, OpenStreetMap, Esri World Imagery · Wetter: Open-Meteo
