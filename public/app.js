@@ -400,8 +400,9 @@ function renderMapFeatures() {
   if (!map) return;
   boundaryLayer.clearLayers(); featureLayer.clearLayers();
   for (const b of state.revier.boundaries) {
-    const l = L.geoJSON(b.geojson, { style: { color: '#9b3b2d', weight: 3, dashArray: '8 6', fillColor: '#6b8e23', fillOpacity: .06 } });
-    l.eachLayer(x => { x.boundaryId = b.id; x.bindTooltip(b.name, { sticky: true }); boundaryLayer.addLayer(x); });
+    // Grenzfläche reagiert nicht auf Tipps (sonst erscheint überall im Revier ein Hinweis); bearbeitbar bleibt sie über das Werkzeug „Grenze“
+    const l = L.geoJSON(b.geojson, { style: { color: '#9b3b2d', weight: 3, dashArray: '8 6', fillColor: '#6b8e23', fillOpacity: .06 }, interactive: false });
+    l.eachLayer(x => { x.boundaryId = b.id; boundaryLayer.addLayer(x); });
   }
   const occupied = new Map(state.checkins.active.filter(c => c.feature_id).map(c => [c.feature_id, c]));
   const planned = new Set(state.plans.filter(p => p.status === 'offen' && p.feature_id).map(p => p.feature_id));
