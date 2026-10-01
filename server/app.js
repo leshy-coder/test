@@ -33,7 +33,16 @@ export function createApp({ onChange = () => {} } = {}) {
   const describeSpot = async (db, mode, featureId) => mode === 'pirsch' ? 'auf der Pirsch' : `auf ${(await featureName(db, featureId)) || 'einer Kanzel'}`;
 
   // ---------- Health & Änderungsabfrage ----------
-  app.get('/api/health', wrap(async (req, res) => { await getDb(); res.json({ ok: true }); }));
+  app.get('/api/health', async (req, res) => {
+    try {
+      const db = await getDb();
+      const users = Number((await db.get('SELECT COUNT(*) AS c FROM users')).c);
+      res.json({ ok: true, db: db.dialect, users, hasDbUrl: !!(process.env.DATABASE_URL || process.env.NETLIFY_DB_URL), netlify: !!(globalThis.Netlify || process.env.NETLIFY) });
+    } catch (e) {
+      console.error('Health-Check fehlgeschlagen', e);
+      res.status(500).json({ ok: false, error: `${e.name || 'Error'}: ${e.message}`, hasDbUrl: !!(process.env.DATABASE_URL || process.env.NETLIFY_DB_URL), netlify: !!(globalThis.Netlify || process.env.NETLIFY) });
+    }
+  });
   app.get('/api/changes', requireAuth, wrap(async (req, res) => {
     const db = await getDb();
     await db.run('UPDATE users SET last_seen = ? WHERE id = ?', [now(), req.user.id]);

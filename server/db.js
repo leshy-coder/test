@@ -100,6 +100,9 @@ export function getDb() {
       if (!url && (globalThis.Netlify || process.env.NETLIFY === 'true')) {
         try { url = (await import('@netlify/database')).getConnectionString(); process.env.NETLIFY_DB_URL = url; } catch {}
       }
+      if (!url && (globalThis.Netlify || process.env.NETLIFY === 'true')) {
+        throw new Error('Keine Datenbank konfiguriert: NETLIFY_DB_URL fehlt. Netlify DB im Projekt aktivieren oder DATABASE_URL setzen.');
+      }
       return url ? pgAdapter(url) : sqliteAdapter();
     })();
     dbPromise.catch(e => { dbPromise = null; throw e; });

@@ -62,7 +62,15 @@ const compass = deg => ['N', 'NNO', 'NO', 'ONO', 'O', 'OSO', 'SO', 'SSO', 'S', '
 let authStatus = { needsSetup: false, hasInviteCode: true };
 async function showAuth() {
   $('#auth').classList.remove('hidden'); $('#app').classList.add('hidden');
-  try { authStatus = await (await fetch('/api/auth/status')).json(); } catch {}
+  $('#auth-error').textContent = '';
+  try {
+    const res = await fetch('/api/auth/status');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `Server antwortet mit Status ${res.status}`);
+    authStatus = data;
+  } catch (e) {
+    $('#auth-error').textContent = `Server nicht erreichbar: ${e.message}. Bitte später erneut versuchen oder den Admin informieren.`;
+  }
   $('#invite-label').classList.remove('hidden');
   $('#setup-hint').classList.toggle('hidden', !authStatus.needsSetup);
   $('#auth-info').classList.toggle('hidden', authStatus.needsSetup);
