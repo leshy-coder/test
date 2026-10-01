@@ -8,6 +8,7 @@ const state = {
   me: null, users: [], online: [],
   revier: { name: 'Mein Revier', center: { lat: 51.1657, lng: 10.4515, zoom: 6 }, boundaries: [], features: [] },
   checkins: { active: [], history: [] }, sightings: [], shots: [], areas: [], events: [], incidents: [], contacts: [], tasks: [], seasons: [], seasonsNote: '', harvest: null, mehrPage: null,
+  unlocked: localStorage.getItem('markersUnlocked') === '1',
   layerFilter: Object.assign({ kanzel: true, kamera: true, kirrung: true, sonstiges: true, labels: true, sightings: true, shots: true, areas: true, grenze: true, tracks: true, incidents: true }, JSON.parse(localStorage.getItem('layerFilter') || '{}')),
   plans: [], hunts: [], hunt: null, huntTab: 'uebersicht',
   weather: null, notifications: [],
@@ -306,6 +307,15 @@ function setTool(tool) {
     $('#map').style.cursor = 'crosshair';
   }
 }
+// Marker sind standardmäßig gesperrt. „Verschieben“ im Popup erlaubt genau ein Ziehen, danach ist der Marker wieder fest.
+function moveOnce(marker, label) {
+  map.closePopup();
+  marker.dragging?.enable();
+  marker.setOpacity(0.7);
+  toast(`${label} jetzt an die neue Stelle ziehen`);
+  marker.once('dragend', () => { if (!state.unlocked) marker.dragging?.disable(); marker.setOpacity(1); });
+}
+const canDrag = own => !!state.unlocked && own;
 const PLACEMENT_TOOLS = ['messen', 'faehrte', 'anschuss', 'flucht', 'fund', 'kanzel', 'kamera', 'kirrung', 'unfall', 'schaden'];
 // ---- Ebenen-Menü: Kartenansicht + Filter ----
 function showLayerMenuV2() {
@@ -317,7 +327,9 @@ function showLayerMenuV2() {
   const cb = (k, label) => `<label><input type="checkbox" data-filter="${k}" ${f[k] ? 'checked' : ''}>${label}</label>`;
   menu.innerHTML = `<h4>Karte</h4>${Object.entries(names).map(([k, v]) => `<button data-layer="${k}" class="${k === current ? 'active' : ''}">${v}</button>`).join('')}
     <h4>Anzeigen</h4>${cb('kanzel', 'Kanzeln')}${cb('kamera', 'Wildkameras')}${cb('kirrung', 'Kirrungen')}${cb('sonstiges', 'Sonstige Punkte')}${cb('labels', 'Beschriftungen')}
-    ${cb('sightings', 'Fährten')}${cb('shots', 'Anschüsse / Nachsuche')}${cb('tracks', 'Nachsuche-Strecken')}${cb('incidents', 'Wildunfälle / Wildschäden')}${cb('areas', 'Gebiete')}${cb('grenze', 'Reviergrenze')}`;
+    ${cb('sightings', 'Fährten')}${cb('shots', 'Anschüsse / Nachsuche')}${cb('tracks', 'Nachsuche-Strecken')}${cb('incidents', 'Wildunfälle / Wildschäden')}${cb('areas', 'Gebiete')}${cb('grenze', 'Reviergrenze')}
+    <h4>Bearbeiten</h4><label><input type="checkbox" id="unlock-markers" ${state.unlocked ? 'checked' : ''}>Marker verschiebbar (sonst gesperrt)</label>`;
+  $('#unlock-markers', menu).onchange = e => { state.unlocked = e.target.checked; localStorage.setItem('markersUnlocked', state.unlocked ? '1' : '0'); scheduleRender(renderMapFeatures); scheduleRender(renderSightingMarkers); scheduleRender(renderShotMarkers); scheduleRender(renderIncidentMarkers); toast(state.unlocked ? 'Marker lassen sich jetzt ziehen' : 'Marker gesperrt'); };
   $$('button[data-layer]', menu).forEach(b => b.onclick = () => {
     Object.values(layers).forEach(l => map.removeLayer(l));
     layers[b.dataset.layer].addTo(map); localStorage.setItem('layer', b.dataset.layer);
@@ -397,7 +409,7 @@ function renderMapFeatures() {
     if (!state.layerFilter[f.kind]) continue;
     const occ = occupied.get(f.id);
     const extra = [occ ? 'occupied' : '', planned.has(f.id) ? 'planned' : '', serviceOverdue(f) ? 'overdue' : '', windClass(f)].filter(Boolean).join(' ');
-    const m = L.marker([f.lat, f.lng], { icon: markerIcon(f.kind, extra), draggable: true });
+    const m = L.marker([f.lat, f.lng], { icon: markerIcon(f.kind, extra), draggable: !!state.unlocked });
     m.bindTooltip(f.name, { permanent: !!state.layerFilter.labels, direction: 'bottom', offset: [0, 2], className: 'marker-label' });
     m.on('dragend', async () => { const p = m.getLatLng(); await api('/features/' + f.id, { method: 'PUT', body: { lat: p.lat, lng: p.lng } }); });
     m.on('click', () => { if (markerClickDuringPlacement(m.getLatLng())) return; openFeaturePopup(m, f, occ); });
@@ -483,13 +495,14 @@ function openFeaturePopup(marker, f, occ) {
       ${f.kind === 'kirrung' ? `<button class="btn sm" data-log="beschickt">Beschickt</button>` : ''}
       ${f.kind === 'kamera' ? `<button class="btn sm" data-log="karte">Karte getauscht</button><button class="btn sm" data-log="batterie">Batterie</button>` : ''}
       ${f.kind === 'kanzel' ? `<button class="btn sm" data-act="check">Prüfung erledigt</button>` : ''}
-      <button class="btn sm" data-act="edit">Bearbeiten</button>
+      <button class="btn sm" data-act="edit">Bearbeiten</button><button class="btn sm" data-act="move">Verschieben</button>
     </div>`;
   marker.bindPopup(html).openPopup();
   const pop = marker.getPopup().getElement();
   $('[data-act="checkin"]', pop)?.addEventListener('click', () => { map.closePopup(); doCheckin('kanzel', f.id, ''); });
   $('[data-act="plan"]', pop)?.addEventListener('click', () => { map.closePopup(); location.hash = 'ansitz'; state.checkinMode = 'kanzel'; renderCheckinForm(); $('#checkin-stand').value = f.id; $('#plan-form').classList.remove('hidden'); });
   $('[data-act="edit"]', pop)?.addEventListener('click', () => { map.closePopup(); editFeature(f.id); });
+  $('[data-act="move"]', pop)?.addEventListener('click', () => moveOnce(marker, f.name));
   $$('[data-log]', pop).forEach(b => b.onclick = async () => { map.closePopup(); try { await api(`/features/${f.id}/logs`, { body: { kind: b.dataset.log } }); toast('Eingetragen'); } catch (e) { toast(e.message, 'error'); } });
   $('[data-act="check"]', pop)?.addEventListener('click', async () => {
     map.closePopup();
@@ -742,7 +755,7 @@ function renderShotMarkers() {
   if (!map) return;
   shotLayer.clearLayers();
   for (const sh of state.shots) {
-    const m = L.marker([sh.lat, sh.lng], { zIndexOffset: 800, draggable: sh.user_id === state.me.id || !!state.me.is_admin,
+    const m = L.marker([sh.lat, sh.lng], { zIndexOffset: 800, draggable: canDrag(sh.user_id === state.me.id || !!state.me.is_admin),
       icon: L.divIcon({ className: '', html: `<div class="shot ${sh.status}"><span class="ico ico-anschuss"></span></div>`, iconSize: [34, 34], iconAnchor: [17, 17], popupAnchor: [0, -16] }) });
     m.bindTooltip(`Anschuss ${sh.species} · ${SHOT_STATUS[sh.status][0]} · ${ageText(sh.shot_at)}`);
     m.on('dragend', async () => { const p = m.getLatLng(); await api('/shots/' + sh.id, { method: 'PUT', body: { lat: p.lat, lng: p.lng } }); });
@@ -785,7 +798,7 @@ async function openShotPopup(marker, sh) {
     <div class="row">
       ${mine && sh.status !== 'gefunden' ? `<button class="btn sm" data-act="status" data-val="${sh.status === 'nachsuche' ? 'gefunden' : 'nachsuche'}">${sh.status === 'nachsuche' ? 'Gefunden' : 'Nachsuche starten'}</button>` : ''}
       ${sh.status !== 'gefunden' && sh.status !== 'abgebrochen' ? `<button class="btn sm" data-act="track">${track?.shotId === sh.id ? 'Aufzeichnung läuft' : 'Nachsuche aufzeichnen'}</button>` : ''}
-      ${mine ? `<button class="btn sm" data-act="flucht">${parsePathClient(sh).length ? 'Fluchtweg bearbeiten' : 'Fluchtweg setzen'}</button><button class="btn sm" data-act="edit">Bearbeiten</button><button class="btn sm danger" data-act="del">Löschen</button>` : ''}
+      ${mine ? `<button class="btn sm" data-act="flucht">${parsePathClient(sh).length ? 'Fluchtweg bearbeiten' : 'Fluchtweg setzen'}</button><button class="btn sm" data-act="edit">Bearbeiten</button><button class="btn sm" data-act="move">Verschieben</button><button class="btn sm danger" data-act="del">Löschen</button>` : ''}
     </div>`, { maxWidth: 320 }).openPopup();
   if (sh.track_m > 0) loadTracksFor(sh.id);
   const popEl = marker.getPopup().getElement();
@@ -806,6 +819,7 @@ async function openShotPopup(marker, sh) {
     } catch (e) { toast(e.message, 'error'); }
   });
   $('[data-act="flucht"]', pop)?.addEventListener('click', () => { map.closePopup(); startPathEdit(sh); });
+  $('[data-act="move"]', pop)?.addEventListener('click', () => moveOnce(marker, 'Anschuss'));
   $('[data-act="edit"]', pop)?.addEventListener('click', () => { map.closePopup(); shotDialog(sh); });
   $('[data-act="del"]', pop)?.addEventListener('click', async () => { if (confirm('Anschuss-Markierung löschen?')) { map.closePopup(); await api('/shots/' + sh.id, { method: 'DELETE' }); } });
   if (sh.photo_count) {
@@ -978,7 +992,7 @@ function renderSightingMarkers() {
     const ageDays = (Date.now() - new Date(sg.observed_at).getTime()) / 86400e3;
     if (ageDays > 14) continue;
     const opacity = Math.max(0.35, 1 - ageDays / 16);
-    const m = L.marker([sg.lat, sg.lng], { opacity, zIndexOffset: 500, draggable: sg.user_id === state.me.id || !!state.me.is_admin,
+    const m = L.marker([sg.lat, sg.lng], { opacity, zIndexOffset: 500, draggable: canDrag(sg.user_id === state.me.id || !!state.me.is_admin),
       icon: L.divIcon({ className: '', html: `<div class="sighting ${spClass(sg.species)} ${ageDays < 1 ? 'fresh' : ''}"><span class="ico ico-faehrte"></span></div>`, iconSize: [30, 30], iconAnchor: [15, 15], popupAnchor: [0, -14] }) });
     m.bindTooltip(`${sg.species} · ${SIGHTING_KINDS[sg.kind] || sg.kind} · ${ageText(sg.observed_at)}`);
     m.on('dragend', async () => { const p = m.getLatLng(); await api('/sightings/' + sg.id, { method: 'PUT', body: { lat: p.lat, lng: p.lng } }); });
@@ -987,9 +1001,10 @@ function renderSightingMarkers() {
       const mine = sg.user_id === state.me.id || state.me.is_admin;
       m.bindPopup(`<h3>${esc(sg.species)}</h3><div>${esc(SIGHTING_KINDS[sg.kind] || sg.kind)} · ${fmtDT(sg.observed_at)} (${ageText(sg.observed_at)})</div>
         ${sg.note ? `<div class="muted small">„${esc(sg.note)}“</div>` : ''}<div class="muted small">gemeldet von ${esc(sg.user_name || 'unbekannt')}</div>
-        ${mine ? `<div class="row"><button class="btn sm" data-act="edit">Bearbeiten</button><button class="btn sm danger" data-act="del">Löschen</button></div>` : ''}`).openPopup();
+        ${mine ? `<div class="row"><button class="btn sm" data-act="edit">Bearbeiten</button><button class="btn sm" data-act="move">Verschieben</button><button class="btn sm danger" data-act="del">Löschen</button></div>` : ''}`).openPopup();
       const pop = m.getPopup().getElement();
       $('[data-act="edit"]', pop)?.addEventListener('click', () => { map.closePopup(); sightingDialog(sg); });
+      $('[data-act="move"]', pop)?.addEventListener('click', () => moveOnce(m, 'Fährte'));
       $('[data-act="del"]', pop)?.addEventListener('click', async () => { if (confirm('Meldung löschen?')) { map.closePopup(); await api('/sightings/' + sg.id, { method: 'DELETE' }); } });
     });
     sightingLayer.addLayer(m);
@@ -1496,7 +1511,7 @@ function renderIncidentMarkers() {
   if (!map) return;
   incidentLayer.clearLayers();
   for (const i of state.incidents) {
-    const m = L.marker([i.lat, i.lng], { zIndexOffset: 600, draggable: i.user_id === state.me.id || !!state.me.is_admin,
+    const m = L.marker([i.lat, i.lng], { zIndexOffset: 600, draggable: canDrag(i.user_id === state.me.id || !!state.me.is_admin),
       icon: L.divIcon({ className: '', html: `<div class="incident ${i.kind} ${i.status}"><span class="ico ico-${i.kind === 'wildschaden' ? 'schaden' : 'unfall'}"></span></div>`, iconSize: [32, 32], iconAnchor: [16, 16], popupAnchor: [0, -16] }) });
     m.bindTooltip(`${i.kind === 'wildschaden' ? 'Wildschaden' : 'Wildunfall'}${i.species ? ' ' + i.species : ''} · ${ageText(i.happened_at)}`);
     m.on('dragend', async () => { const p = m.getLatLng(); await api('/incidents/' + i.id, { method: 'PUT', body: { lat: p.lat, lng: p.lng } }); });
@@ -1511,11 +1526,12 @@ async function openIncidentPopup(marker, i) {
     <div class="small">${i.kind === 'wildschaden' ? `${i.crop ? 'Kultur: ' + esc(i.crop) : ''}${i.farmer ? ' · ' + esc(i.farmer) : ''}${i.area_ha ? ' · ' + i.area_ha + ' ha' : ''}` : `${i.road ? esc(i.road) : ''}${i.police_ref ? ' · Az. ' + esc(i.police_ref) : ''}`}</div>
     ${i.note ? `<div class="muted small">„${esc(i.note)}“</div>` : ''}<div class="photo-grid" id="inc-photos-${i.id}"></div>
     <div class="row"><select data-status style="width:auto;margin:0;padding:.3rem">${Object.entries(INCIDENT_STATUS).map(([k, [v]]) => `<option value="${k}" ${k === i.status ? 'selected' : ''}>${v}</option>`).join('')}</select>
-      <button class="btn sm" data-act="edit">Bearbeiten</button><button class="btn sm" data-act="print">PDF</button>${mine ? `<button class="btn sm danger" data-act="del">Löschen</button>` : ''}</div>`, { maxWidth: 320 }).openPopup();
+      <button class="btn sm" data-act="edit">Bearbeiten</button><button class="btn sm" data-act="print">PDF</button>${mine ? `<button class="btn sm" data-act="move">Verschieben</button><button class="btn sm danger" data-act="del">Löschen</button>` : ''}</div>`, { maxWidth: 320 }).openPopup();
   const pop = marker.getPopup().getElement();
   $('[data-status]', pop).onchange = e => act2(async () => { await api('/incidents/' + i.id, { method: 'PUT', body: { status: e.target.value } }); map.closePopup(); });
   $('[data-act="edit"]', pop)?.addEventListener('click', () => { map.closePopup(); incidentDialog(i); });
   $('[data-act="print"]', pop)?.addEventListener('click', () => printIncident(i));
+  $('[data-act="move"]', pop)?.addEventListener('click', () => moveOnce(marker, 'Meldung'));
   $('[data-act="del"]', pop)?.addEventListener('click', async () => { if (confirm('Meldung löschen?')) { map.closePopup(); await api('/incidents/' + i.id, { method: 'DELETE' }); } });
   if (i.photo_count) { try { const photos = await api(`/incidents/${i.id}/photos`); const grid = $(`#inc-photos-${i.id}`); if (grid) { grid.innerHTML = photos.map(p => `<span class="ph"><img src="${p.data}" alt="Foto"></span>`).join(''); $$('img', grid).forEach(img => img.onclick = () => openDialog(`<img class="photo-full" src="${img.src}"><div class="row" style="margin-top:.6rem"><button class="btn" data-close>Schließen</button></div>`)); } } catch {} }
 }
