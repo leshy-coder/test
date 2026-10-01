@@ -1,0 +1,13 @@
+{
+  "name": "RevierApp",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:22",
+  "forwardPorts": [3000],
+  "portsAttributes": {
+    "3000": { "label": "RevierApp", "onAutoForward": "openBrowser" }
+  },
+  "postCreateCommand": "npm install --no-audit --no-fund",
+  "postStartCommand": "npm run demo",
+  "customizations": {
+    "vscode": { "settings": { "workbench.startupEditor": "none" } }
+  }
+}

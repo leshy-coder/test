@@ -25,6 +25,17 @@ Demo-Zugänge: **Hans / demo**, **Grete / demo**, **Karl / demo**. Für den Mehr
 
 Die Demodaten werden nur in eine leere Datenbank geschrieben. Zum Zurücksetzen den Ordner `data/` löschen.
 
+## Ohne eigenen Computer testen (iPad, Tablet, Handy) mit GitHub Codespaces
+
+1. Auf GitHub anmelden und dieses Repository öffnen, Branch `claude/revierapp` wählen.
+2. Grüner Button „Code“ → Reiter „Codespaces“ → „Create codespace on claude/revierapp“.
+3. Zwei bis drei Minuten warten. Der Codespace installiert alles und startet die App mit Demodaten automatisch.
+4. Es öffnet sich ein Tab mit der App. Falls nicht: unten den Reiter „Ports“ (bzw. „Anschlüsse“) wählen und bei Port 3000 auf das Globus-Symbol tippen.
+
+Demo-Zugänge wie oben: Hans / demo, Grete / demo, Karl / demo. Die Adresse (`…-3000.app.github.dev`) ist HTTPS, also funktionieren auch Standort und Push. Standardmäßig ist der Port privat, nur dein GitHub-Konto kommt an die App. Sollen andere mittesten, im Reiter „Ports“ mit Rechtsklick bzw. langem Tippen auf Port 3000 die Sichtbarkeit auf „Public“ stellen.
+
+Codespaces ist für private GitHub-Konten mit 60 Stunden pro Monat kostenlos. Ein Codespace stoppt nach 30 Minuten ohne Aktivität und wird über die Codespaces-Übersicht wieder gestartet. Die Daten bleiben erhalten, solange der Codespace existiert.
+
 ## Start im echten Betrieb
 
 ```bash
