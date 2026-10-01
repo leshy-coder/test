@@ -252,7 +252,7 @@ function setTool(tool) {
     hint.textContent = 'Tippe auf die Karte an die Stelle des Anschusses';
     $('#map').style.cursor = 'crosshair';
   } else if (tool === 'messen') {
-    hint.textContent = 'Punkte antippen, um Entfernungen zu messen (auch Kanzeln und Marker)';
+    hint.classList.add('hidden');
     $('#map').style.cursor = 'crosshair';
     $('#measure-box').classList.remove('hidden');
     renderMeasure();
@@ -552,7 +552,7 @@ function renderMeasure() {
       measureLayer.addLayer(line);
     }
   });
-  $('#measure-total').textContent = measurePoints.length > 1 ? `Gesamt ${fmtDist(total)}` : measurePoints.length === 1 ? 'Zweiten Punkt antippen' : 'Ersten Punkt antippen';
+  $('#measure-total').textContent = measurePoints.length > 1 ? `Gesamt ${fmtDist(total)}` : measurePoints.length === 1 ? 'Zweiten Punkt antippen' : 'Punkte auf der Karte antippen';
   $('#measure-last').textContent = measurePoints.length > 1 ? `Letzter Abschnitt ${fmtDist(last)} · Richtung ${Math.round(lastBearing)}° ${compass(lastBearing)}` : '';
 }
 $('#measure-undo').onclick = () => { measurePoints.pop(); renderMeasure(); };
