@@ -7,6 +7,7 @@ import { db, getSetting, setSetting } from './db.js';
 import { register, login, logout, requireAuth, userFromToken, httpError } from './auth.js';
 import { vapidKeys, saveSubscription, removeSubscription, notify } from './push.js';
 import { getWeather } from './weather.js';
+import { seedDemo } from './seed.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -444,4 +445,7 @@ app.use((err, req, res, next) => {
   res.status(err.status || 500).json({ error: err.status ? err.message : 'Interner Fehler.' });
 });
 
+if (process.env.DEMO === '1' && seedDemo()) {
+  console.log('Demodaten eingespielt. Anmeldung: Hans / demo, Grete / demo, Karl / demo');
+}
 server.listen(PORT, () => console.log(`RevierApp läuft auf http://localhost:${PORT}`));

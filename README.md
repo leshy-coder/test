@@ -12,9 +12,20 @@ Jagd-Webanwendung für die Jagdgemeinschaft eines Reviers: aktuelles Wetter mit 
 - **Echtzeit**: WebSocket-Broadcast, Online-Anzeige, In-App-Benachrichtigungsliste.
 - **PWA**: installierbar auf Android/iOS (Zum Home-Bildschirm), Web-Push über VAPID, Offline-Cache der App-Hülle.
 
-## Start
+## Schnellstart zum Ausprobieren (mit Demodaten)
 
-Voraussetzung: Node.js 22.13 oder neuer (nutzt das eingebaute `node:sqlite`).
+Voraussetzung: Node.js 22.13 oder neuer von https://nodejs.org (nutzt das eingebaute `node:sqlite`).
+
+- **Windows**: Doppelklick auf `start.bat`
+- **macOS / Linux**: `bash start.sh`
+
+Das Skript installiert die Abhängigkeiten, spielt ein Demo-Revier ein (Grenze, vier Kanzeln, Wildkameras, Kirrung, eine laufende Anwesenheit, eine Ankündigung mit Bestätigungen und eine geplante Drückjagd) und öffnet http://localhost:3000.
+
+Demo-Zugänge: **Hans / demo**, **Grete / demo**, **Karl / demo**. Für den Mehrbenutzer-Test im zweiten Browserfenster (Inkognito) als Grete anmelden.
+
+Die Demodaten werden nur in eine leere Datenbank geschrieben. Zum Zurücksetzen den Ordner `data/` löschen.
+
+## Start im echten Betrieb
 
 ```bash
 npm install
