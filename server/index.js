@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { db, getSetting, setSetting } from './db.js';
-import { register, login, logout, requireAuth, userFromToken, httpError } from './auth.js';
+import { register, login, logout, requireAuth, requireAdmin, userFromToken, httpError, userCount, getInviteCode, setInviteCode, changePassword, setPassword } from './auth.js';
 import { vapidKeys, saveSubscription, removeSubscription, notify } from './push.js';
 import { getWeather } from './weather.js';
 import { seedDemo } from './seed.js';
@@ -71,13 +71,40 @@ function fmtTime(iso) {
 app.get('/api/health', (req, res) => res.json({ ok: true, uptime: Math.round(process.uptime()) }));
 
 // ---------- Auth ----------
-app.post('/api/auth/register', wrap((req, res) => res.json(register(req.body.name, req.body.password))));
+app.get('/api/auth/status', (req, res) => res.json({ needsSetup: userCount() === 0, hasInviteCode: !!getInviteCode() }));
+app.post('/api/auth/register', wrap((req, res) => { const r = register(req.body.name, req.body.password, req.body.invite_code); broadcast('users'); res.json(r); }));
 app.post('/api/auth/login', wrap((req, res) => res.json(login(req.body.name, req.body.password))));
 app.post('/api/auth/logout', requireAuth, (req, res) => { logout(req.token); res.json({ ok: true }); });
 app.get('/api/auth/me', requireAuth, (req, res) => res.json(req.user));
+app.post('/api/auth/password', requireAuth, wrap((req, res) => { changePassword(req.user.id, req.body.old_password, req.body.new_password); res.json({ ok: true }); }));
 app.get('/api/users', requireAuth, (req, res) => {
-  res.json(db.prepare('SELECT id, name, color FROM users ORDER BY name').all());
+  res.json(db.prepare('SELECT id, name, color, is_admin, created_at FROM users ORDER BY name').all());
 });
+
+// ---------- Admin ----------
+app.get('/api/admin/invite', requireAuth, requireAdmin, (req, res) => res.json({ code: getInviteCode(), fromEnv: !!process.env.INVITE_CODE }));
+app.put('/api/admin/invite', requireAuth, requireAdmin, wrap((req, res) => {
+  if (process.env.INVITE_CODE) throw httpError(400, 'Der Code ist per Umgebungsvariable INVITE_CODE festgelegt.');
+  setInviteCode(req.body.code); res.json({ ok: true });
+}));
+app.post('/api/admin/users/:id/reset-password', requireAuth, requireAdmin, wrap((req, res) => {
+  const u = db.prepare('SELECT id, name FROM users WHERE id = ?').get(req.params.id);
+  if (!u) throw httpError(404, 'Nutzer nicht gefunden.');
+  const temp = Math.random().toString(36).slice(2, 8);
+  setPassword(u.id, temp);
+  res.json({ ok: true, name: u.name, password: temp });
+}));
+app.put('/api/admin/users/:id/admin', requireAuth, requireAdmin, wrap((req, res) => {
+  if (Number(req.params.id) === req.user.id && !req.body.is_admin) throw httpError(400, 'Du kannst dir selbst die Admin-Rechte nicht entziehen.');
+  db.prepare('UPDATE users SET is_admin = ? WHERE id = ?').run(req.body.is_admin ? 1 : 0, req.params.id);
+  broadcast('users'); res.json({ ok: true });
+}));
+app.delete('/api/admin/users/:id', requireAuth, requireAdmin, wrap((req, res) => {
+  if (Number(req.params.id) === req.user.id) throw httpError(400, 'Du kannst dich nicht selbst löschen.');
+  db.prepare('DELETE FROM users WHERE id = ?').run(req.params.id);
+  broadcast('users'); broadcast('checkins'); broadcast('plans');
+  res.json({ ok: true });
+}));
 
 // ---------- Push ----------
 app.get('/api/push/key', (req, res) => res.json({ publicKey: vapidKeys.publicKey }));

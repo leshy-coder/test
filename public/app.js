@@ -59,14 +59,25 @@ const spotText = (mode, featureName) => mode === 'pirsch' ? 'auf der Pirsch' : `
 const compass = deg => ['N', 'NNO', 'NO', 'ONO', 'O', 'OSO', 'SO', 'SSO', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'][Math.round(deg / 22.5) % 16];
 
 // ---------- Auth ----------
-function showAuth() { $('#auth').classList.remove('hidden'); $('#app').classList.add('hidden'); }
+let authStatus = { needsSetup: false, hasInviteCode: true };
+async function showAuth() {
+  $('#auth').classList.remove('hidden'); $('#app').classList.add('hidden');
+  try { authStatus = await (await fetch('/api/auth/status')).json(); } catch {}
+  $('#invite-label').classList.remove('hidden');
+  $('#setup-hint').classList.toggle('hidden', !authStatus.needsSetup);
+  $('#auth-info').classList.toggle('hidden', authStatus.needsSetup);
+  $('#btn-login').classList.toggle('hidden', authStatus.needsSetup);
+  $('#invite-label-text').textContent = authStatus.needsSetup ? 'Einladungscode festlegen' : 'Einladungscode (nur zum Registrieren)';
+  if (authStatus.needsSetup) { $('#btn-register').classList.add('primary'); $('#btn-register').textContent = 'Revier anlegen'; }
+}
 $('#auth-form').addEventListener('submit', async e => {
   e.preventDefault();
   const action = e.submitter?.dataset.action || 'login';
   const fd = new FormData(e.target);
   $('#auth-error').textContent = '';
   try {
-    const r = await api('/auth/' + action, { body: { name: fd.get('name'), password: fd.get('password') } });
+    if (action === 'register' && !fd.get('invite_code')) { $('#auth-error').textContent = authStatus.needsSetup ? 'Bitte einen Einladungscode festlegen.' : 'Zum Registrieren brauchst du den Einladungscode.'; return; }
+    const r = await api('/auth/' + action, { body: { name: fd.get('name'), password: fd.get('password'), invite_code: fd.get('invite_code') } });
     setToken(r.token); await boot();
   } catch (err) { $('#auth-error').textContent = err.message; }
 });
@@ -100,6 +111,7 @@ function connectWs() {
     switch (msg.type) {
       case 'presence': state.online = msg.data.online; renderOnline(); break;
       case 'revier': loadRevier(); break;
+      case 'users': loadUsers().then(() => { if (state.view === 'mehr') renderSettings(); }); break;
       case 'checkins': loadCheckins(); loadNotifications(); break;
       case 'plans': loadPlans(); loadNotifications(); break;
       case 'hunts': loadHunts(); if (state.hunt && (!msg.data.hunt_id || msg.data.hunt_id === state.hunt.id)) loadHunt(state.hunt.id); loadNotifications(); break;
@@ -707,12 +719,47 @@ $('#btn-push-enable').onclick = () => subscribePush();
 $('#btn-push-test').onclick = async () => { try { await api('/push/test', { method: 'POST' }); toast('Testnachricht gesendet'); } catch (e) { toast(e.message, 'error'); } };
 
 // ---------- Einstellungen ----------
-function renderSettings() {
+async function renderSettings() {
   $('#set-revier-name').value = state.revier.name;
+  $('#me-admin').classList.toggle('hidden', !state.me.is_admin);
+  $('#admin-card').classList.toggle('hidden', !state.me.is_admin);
+  if (state.me.is_admin) renderAdmin();
   $('#features-list').innerHTML = state.revier.features.length ? state.revier.features.map(f => `<div class="item"><span class="ico ico-${f.kind === 'sonstiges' ? 'locate' : f.kind}"></span><span><b>${esc(f.name)}</b> <span class="muted small">${featureKinds[f.kind]}</span></span><button class="btn sm" data-edit="${f.id}">Bearbeiten</button></div>`).join('') : '<p class="muted small">Noch nichts angelegt. Nutze die Werkzeuge auf der Karte.</p>';
   $$('#features-list [data-edit]').forEach(b => b.onclick = () => editFeature(Number(b.dataset.edit)));
   updatePushStatus();
 }
+$('#btn-pw-change').onclick = async () => {
+  try {
+    await api('/auth/password', { body: { old_password: $('#pw-old').value, new_password: $('#pw-new').value } });
+    toast('Passwort geändert – bitte neu anmelden'); setToken(null); setTimeout(() => location.reload(), 1200);
+  } catch (e) { toast(e.message, 'error'); }
+};
+async function renderAdmin() {
+  try {
+    const inv = await api('/admin/invite');
+    $('#admin-invite').value = inv.code || ''; $('#admin-invite').disabled = inv.fromEnv; $('#btn-invite-save').disabled = inv.fromEnv;
+  } catch {}
+  $('#admin-users').innerHTML = state.users.map(u => `<div class="item" style="display:flex;align-items:center;gap:.6rem;padding:.4rem 0;border-bottom:1px dashed var(--parchment-dark)">${avatar(u)}
+    <span style="flex:1"><b>${esc(u.name)}</b>${u.is_admin ? ' <span class="status-tag ok">Admin</span>' : ''}${u.id === state.me.id ? ' <span class="muted small">(ich)</span>' : ''}</span>
+    ${u.id !== state.me.id ? `<button class="btn sm" data-reset="${u.id}" title="Neues Startpasswort erzeugen">Passwort</button><button class="btn sm" data-admin="${u.id}" data-val="${u.is_admin ? 0 : 1}">${u.is_admin ? 'Admin entziehen' : 'Zum Admin'}</button><button class="btn sm danger" data-deluser="${u.id}">✕</button>` : ''}</div>`).join('');
+  $$('#admin-users [data-reset]').forEach(b => b.onclick = async () => {
+    const u = state.users.find(x => x.id === Number(b.dataset.reset));
+    if (!confirm(`Neues Passwort für ${u.name} erzeugen? Das alte gilt dann nicht mehr.`)) return;
+    try { const r = await api(`/admin/users/${u.id}/reset-password`, { method: 'POST' });
+      openDialog(`<h2>Startpasswort für ${esc(r.name)}</h2><p>Bitte persönlich weitergeben. ${esc(r.name)} sollte es unter „Mehr → Konto“ ändern.</p><p style="font-size:1.6rem;font-family:var(--font-head);text-align:center;letter-spacing:.1em"><b>${esc(r.password)}</b></p><div class="row"><button class="btn primary" data-close>Schließen</button></div>`);
+    } catch (e) { toast(e.message, 'error'); }
+  });
+  $$('#admin-users [data-admin]').forEach(b => b.onclick = async () => { try { await api(`/admin/users/${b.dataset.admin}/admin`, { method: 'PUT', body: { is_admin: b.dataset.val === '1' } }); } catch (e) { toast(e.message, 'error'); } });
+  $$('#admin-users [data-deluser]').forEach(b => b.onclick = async () => {
+    const u = state.users.find(x => x.id === Number(b.dataset.deluser));
+    if (confirm(`${u.name} wirklich entfernen? Check-ins und Ankündigungen dieses Nutzers werden gelöscht.`)) { try { await api(`/admin/users/${u.id}`, { method: 'DELETE' }); toast(`${u.name} entfernt`); } catch (e) { toast(e.message, 'error'); } }
+  });
+}
+$('#btn-invite-save').onclick = async () => { try { await api('/admin/invite', { method: 'PUT', body: { code: $('#admin-invite').value } }); toast('Einladungscode gespeichert'); } catch (e) { toast(e.message, 'error'); } };
+$('#btn-invite-share').onclick = async () => {
+  const text = `Einladung zur RevierApp „${state.revier.name}“\n\n1. Link öffnen: ${location.origin}\n2. Auf „Neu registrieren“ tippen, Name und eigenes Passwort wählen\n3. Einladungscode: ${$('#admin-invite').value}\n\nTipp fürs Handy: Seite über „Teilen → Zum Home-Bildschirm“ installieren, dann unter „Mehr“ Push-Benachrichtigungen aktivieren.`;
+  try { if (navigator.share) await navigator.share({ title: 'Einladung RevierApp', text }); else { await navigator.clipboard.writeText(text); toast('Einladungstext in die Zwischenablage kopiert'); } } catch {}
+};
 $('#btn-save-revier').onclick = async () => { await api('/revier/settings', { method: 'PUT', body: { name: $('#set-revier-name').value } }); toast('Gespeichert'); };
 $('#btn-save-center').onclick = async () => { const c = map.getCenter(); await api('/revier/settings', { method: 'PUT', body: { center: { lat: c.lat, lng: c.lng, zoom: map.getZoom() } } }); toast('Mittelpunkt gespeichert'); loadWeather(); };
 

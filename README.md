@@ -43,7 +43,17 @@ npm install
 npm start
 ```
 
-Danach http://localhost:3000 öffnen. Jeder Jäger registriert sich einmal mit Name und Passwort.
+Danach http://localhost:3000 öffnen.
+
+### Zugang für die Jäger: Einladungscode
+
+- Der **erste Nutzer** legt bei der Registrierung den Einladungscode des Reviers fest und wird automatisch **Admin**.
+- Alle weiteren Jäger registrieren sich selbst mit Name, eigenem Passwort und diesem Einladungscode. Ohne Code ist keine Registrierung möglich.
+- Der Admin findet unter „Mehr → Verwaltung“ den Code, kann ihn ändern, per „Einladung teilen“ einen fertigen Einladungstext verschicken, Nutzern ein neues Startpasswort erzeugen, weitere Admins ernennen und Nutzer entfernen.
+- Jeder Nutzer kann unter „Mehr → Konto“ sein Passwort ändern.
+- Alternativ lässt sich der Code fest über die Umgebungsvariable `INVITE_CODE` vorgeben.
+
+Demodaten verwenden den Einladungscode `demo`.
 
 ### Umgebungsvariablen
 
@@ -52,6 +62,7 @@ Danach http://localhost:3000 öffnen. Jeder Jäger registriert sich einmal mit N
 | `PORT` | HTTP-Port | `3000` |
 | `DATA_DIR` | Verzeichnis für SQLite-Datenbank und VAPID-Schlüssel | `./data` |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Eigene Web-Push-Schlüssel (werden sonst beim ersten Start erzeugt) | automatisch |
+| `INVITE_CODE` | Fester Einladungscode; sonst legt ihn der erste Nutzer fest | – |
 | `VAPID_SUBJECT` | Kontakt für Push-Dienste, z. B. `mailto:ich@example.com` | `mailto:revier@example.com` |
 | `TZ` | Zeitzone für Push-Texte | `Europe/Berlin` |
 

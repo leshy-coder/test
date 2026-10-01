@@ -29,11 +29,20 @@ async function call(path, { token, method, body } = {}) {
 
 let hans, grete, standId, planId, huntId;
 
-test('Registrierung und Anmeldung', async () => {
-  hans = (await call('/auth/register', { body: { name: 'Hans', password: 'geheim1' } })).data;
-  assert.ok(hans.token); assert.equal(hans.user.name, 'Hans');
-  grete = (await call('/auth/register', { body: { name: 'Grete', password: 'geheim2' } })).data;
-  const dup = await call('/auth/register', { body: { name: 'hans', password: 'xxxx' } });
+test('Registrierung mit Einladungscode und Anmeldung', async () => {
+  assert.equal((await call('/auth/status')).data.needsSetup, true);
+  const noCode = await call('/auth/register', { body: { name: 'Hans', password: 'geheim1' } });
+  assert.equal(noCode.status, 400, 'erster Nutzer muss Code festlegen');
+  hans = (await call('/auth/register', { body: { name: 'Hans', password: 'geheim1', invite_code: 'Buchenhain' } })).data;
+  assert.ok(hans.token); assert.equal(hans.user.name, 'Hans'); assert.equal(hans.user.is_admin, 1, 'erster Nutzer ist Admin');
+  assert.equal((await call('/auth/status')).data.needsSetup, false);
+  const wrong = await call('/auth/register', { body: { name: 'Fremder', password: 'xxxx', invite_code: 'falsch' } });
+  assert.equal(wrong.status, 403);
+  const missing = await call('/auth/register', { body: { name: 'Fremder', password: 'xxxx' } });
+  assert.equal(missing.status, 403);
+  grete = (await call('/auth/register', { body: { name: 'Grete', password: 'geheim2', invite_code: 'Buchenhain' } })).data;
+  assert.equal(grete.user.is_admin, 0);
+  const dup = await call('/auth/register', { body: { name: 'hans', password: 'xxxx', invite_code: 'Buchenhain' } });
   assert.equal(dup.status, 409);
   const bad = await call('/auth/login', { body: { name: 'Hans', password: 'falsch' } });
   assert.equal(bad.status, 401);
@@ -119,6 +128,25 @@ test('Drückjagd-Planung: Teilnehmer, Treiben, Checkliste, Strecke', async () =>
   assert.equal(list[0].participant_count, 1);
   await call(`/hunts/${huntId}`, { token: hans.token, method: 'DELETE' });
   assert.equal((await call(`/hunts/${huntId}`, { token: hans.token })).status, 404);
+});
+
+test('Passwort ändern und Admin-Funktionen', async () => {
+  const wrongOld = await call('/auth/password', { token: grete.token, body: { old_password: 'nein', new_password: 'neu1234' } });
+  assert.equal(wrongOld.status, 401);
+  await call('/auth/password', { token: grete.token, body: { old_password: 'geheim2', new_password: 'neu1234' } });
+  assert.equal((await call('/auth/me', { token: grete.token })).status, 401, 'alte Sitzung beendet');
+  grete = (await call('/auth/login', { body: { name: 'Grete', password: 'neu1234' } })).data;
+  assert.ok(grete.token);
+  assert.equal((await call('/admin/invite', { token: grete.token })).status, 403, 'kein Admin');
+  await call('/admin/invite', { token: hans.token, method: 'PUT', body: { code: 'NeuerCode' } });
+  assert.equal((await call('/auth/register', { body: { name: 'Karl', password: 'xxxx', invite_code: 'Buchenhain' } })).status, 403);
+  const karl = (await call('/auth/register', { body: { name: 'Karl', password: 'xxxx', invite_code: 'NeuerCode' } })).data;
+  const reset = (await call(`/admin/users/${karl.user.id}/reset-password`, { token: hans.token, method: 'POST' })).data;
+  assert.ok(reset.password.length >= 6);
+  assert.equal((await call('/auth/login', { body: { name: 'Karl', password: reset.password } })).status, 200);
+  assert.equal((await call(`/admin/users/${hans.user.id}`, { token: hans.token, method: 'DELETE' })).status, 400, 'nicht selbst löschen');
+  await call(`/admin/users/${karl.user.id}`, { token: hans.token, method: 'DELETE' });
+  assert.equal((await call('/users', { token: hans.token })).data.some(u => u.name === 'Karl'), false);
 });
 
 test('Push-Schlüssel und Abonnement', async () => {

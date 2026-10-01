@@ -6,9 +6,9 @@ export function seedDemo() {
   const users = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
   if (users > 0) return false;
 
-  const hans = register('Hans', 'demo').user;
-  const grete = register('Grete', 'demo').user;
-  const karl = register('Karl', 'demo').user;
+  const hans = register('Hans', 'demo', 'demo').user; // erster Nutzer: legt Einladungscode fest, wird Admin
+  const grete = register('Grete', 'demo', 'demo').user;
+  const karl = register('Karl', 'demo', 'demo').user;
 
   setSetting('revier_name', 'Revier Buchenhain (Demo)');
   setSetting('center', { lat: 50.952, lng: 10.205, zoom: 14 });

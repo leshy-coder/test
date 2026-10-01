@@ -29,13 +29,15 @@
     <form id="auth-form" autocomplete="on">
       <label>Name<input name="name" required minlength="2" maxlength="40" autocomplete="username" placeholder="z. B. Hans"></label>
       <label>Passwort<input name="password" type="password" required minlength="4" autocomplete="current-password"></label>
+      <label id="invite-label" class="hidden"><span id="invite-label-text">Einladungscode</span><input name="invite_code" maxlength="60" autocomplete="off" placeholder="vom Revier-Admin"></label>
+      <p class="muted small hidden" id="setup-hint">Du bist der erste Nutzer dieses Reviers. Lege jetzt den Einladungscode fest, den alle anderen Jäger zum Registrieren brauchen. Du wirst damit Admin.</p>
       <p class="form-error" id="auth-error"></p>
       <div class="auth-actions">
-        <button type="submit" class="btn primary" data-action="login">Anmelden</button>
-        <button type="submit" class="btn" data-action="register">Neu registrieren</button>
+        <button type="submit" class="btn primary" data-action="login" id="btn-login">Anmelden</button>
+        <button type="submit" class="btn" data-action="register" id="btn-register">Neu registrieren</button>
       </div>
     </form>
-    <p class="muted small">Alle Jäger des Reviers melden sich hier mit eigenem Namen an. Die Anwendung kann von mehreren Personen gleichzeitig genutzt werden.</p>
+    <p class="muted small" id="auth-info">Zum Registrieren brauchst du den Einladungscode deines Reviers. Danach meldest du dich nur noch mit Name und Passwort an.</p>
   </div>
 </section>
 
@@ -154,8 +156,23 @@
         </div>
         <div class="card">
           <h2>Konto</h2>
-          <p>Angemeldet als <b id="me-name"></b></p>
+          <p>Angemeldet als <b id="me-name"></b> <span id="me-admin" class="status-tag ok hidden">Admin</span></p>
+          <details>
+            <summary>Passwort ändern</summary>
+            <label>Altes Passwort<input id="pw-old" type="password" autocomplete="current-password"></label>
+            <label>Neues Passwort<input id="pw-new" type="password" minlength="4" autocomplete="new-password"></label>
+            <button class="btn" id="btn-pw-change">Passwort ändern</button>
+          </details>
+          <p></p>
           <button class="btn danger" id="btn-logout">Abmelden</button>
+        </div>
+        <div class="card hidden" id="admin-card">
+          <h2>Verwaltung (Admin)</h2>
+          <label>Einladungscode für neue Nutzer<input id="admin-invite" maxlength="60"></label>
+          <div class="row"><button class="btn" id="btn-invite-save">Code speichern</button><button class="btn" id="btn-invite-share">Einladung teilen</button></div>
+          <p class="muted small">Gib den Code nur Jägern deines Reviers weiter. Wer ihn hat, kann sich registrieren und sieht, wer im Revier ist.</p>
+          <h3 style="margin-top:1rem">Nutzer</h3>
+          <div id="admin-users"></div>
         </div>
         <p class="muted small center">RevierApp · Wetterdaten von Open-Meteo · Karten © OpenStreetMap-Mitwirkende</p>
       </div>
