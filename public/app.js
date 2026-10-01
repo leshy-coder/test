@@ -7,7 +7,7 @@ const state = {
   token: localStorage.getItem('token'),
   me: null, users: [], online: [],
   revier: { name: 'Mein Revier', center: { lat: 51.1657, lng: 10.4515, zoom: 6 }, boundaries: [], features: [] },
-  checkins: { active: [], history: [] },
+  checkins: { active: [], history: [] }, sightings: [],
   plans: [], hunts: [], hunt: null, huntTab: 'uebersicht',
   weather: null, notifications: [],
   view: 'karte', checkinMode: 'kanzel',
@@ -99,7 +99,7 @@ async function boot() {
   $('#btn-me').textContent = initials(state.me.name); $('#btn-me').style.background = state.me.color;
   $('#me-name').textContent = state.me.name;
   try { initMap(); } catch (e) { console.error('Karte konnte nicht initialisiert werden', e); toast('Karte nicht verfügbar', 'error'); }
-  await Promise.all([loadRevier(), loadUsers(), loadCheckins(), loadPlans(), loadHunts(), loadNotifications()]);
+  await Promise.all([loadRevier(), loadUsers(), loadCheckins(), loadPlans(), loadHunts(), loadNotifications(), loadSightings()]);
   loadWeather();
   connectWs();
   startPolling();
@@ -111,7 +111,7 @@ async function boot() {
 
 // ---------- Live-Updates: Abfrage der Versionszähler (überall) + WebSocket (nur lokaler Server) ----------
 let ws, wsTimer, wsFailures = 0, wsEverOpen = false, pollTimer, knownVersions = null;
-const loaders = { users: () => loadUsers(), revier: loadRevier, checkins: () => loadCheckins().then(loadNotifications), plans: () => loadPlans().then(loadNotifications), hunts: refreshHunts };
+const loaders = { users: () => loadUsers(), revier: loadRevier, checkins: () => loadCheckins().then(loadNotifications), plans: () => loadPlans().then(loadNotifications), hunts: refreshHunts, sightings: () => loadSightings().then(loadNotifications) };
 function refreshHunts(data = {}) {
   return loadHunts().then(() => { if (state.hunt && (!data.hunt_id || data.hunt_id === state.hunt.id)) return loadHunt(state.hunt.id); }).then(loadNotifications);
 }
@@ -180,7 +180,7 @@ function showView(v) {
 async function loadUsers() { state.users = await api('/users'); }
 
 // ---------- Revier / Map ----------
-let map, layers = {}, boundaryLayer, featureLayer, checkinLayer, drawControl, activeTool = null, meMarker;
+let map, layers = {}, boundaryLayer, featureLayer, checkinLayer, sightingLayer, drawControl, activeTool = null, meMarker;
 const featureKinds = { kanzel: 'Kanzel', kamera: 'Wildkamera', kirrung: 'Kirrung', sonstiges: 'Sonstiges' };
 
 function initMap() {
@@ -197,6 +197,7 @@ function initMap() {
   boundaryLayer = new L.FeatureGroup().addTo(map);
   featureLayer = new L.FeatureGroup().addTo(map);
   checkinLayer = new L.FeatureGroup().addTo(map);
+  sightingLayer = new L.FeatureGroup().addTo(map);
 
   map.on('click', onMapClick);
   map.on(L.Draw.Event.CREATED, async e => {
@@ -238,6 +239,9 @@ function setTool(tool) {
       edit: { featureGroup: boundaryLayer },
     });
     map.addControl(drawControl);
+  } else if (tool === 'faehrte') {
+    hint.textContent = 'Tippe auf die Karte an die Stelle der Fährte oder Beobachtung';
+    $('#map').style.cursor = 'crosshair';
   } else {
     hint.textContent = `Tippe auf die Karte, um eine ${featureKinds[tool]} zu setzen`;
     $('#map').style.cursor = 'crosshair';
@@ -245,6 +249,7 @@ function setTool(tool) {
 }
 async function onMapClick(e) {
   if (!activeTool || activeTool === 'grenze') return;
+  if (activeTool === 'faehrte') { setTool(null); return sightingDialog({ lat: e.latlng.lat, lng: e.latlng.lng }); }
   const kind = activeTool;
   const f = await api('/features', { body: { kind, lat: e.latlng.lat, lng: e.latlng.lng } });
   setTool(null);
@@ -485,6 +490,82 @@ function renderPlans() {
         });
       }
     } catch (e) { toast(e.message, 'error'); }
+  });
+}
+
+// ---------- Fährten / Wildbeobachtungen ----------
+const SPECIES = ['Schwarzwild', 'Rehwild', 'Rotwild', 'Damwild', 'Muffelwild', 'Fuchs', 'Dachs', 'Waschbär', 'Wolf', 'Sonstiges'];
+const SIGHTING_KINDS = { faehrte: 'Fährte / Spuren', sichtung: 'Sichtung', losung: 'Losung', wuehlstelle: 'Wühlstelle', suhle: 'Suhle / Malbaum', wildschaden: 'Wildschaden', riss: 'Riss', fallwild: 'Fallwild', wildkamera: 'Wildkamera-Aufnahme' };
+const spClass = sp => 'sp-' + sp.replace('ä', 'ae').replace('ö', 'oe').replace('ü', 'ue');
+function ageText(iso) {
+  const h = (Date.now() - new Date(iso).getTime()) / 3600e3;
+  if (h < 1) return 'gerade eben'; if (h < 24) return `vor ${Math.round(h)} Std.`;
+  const d = Math.floor(h / 24); return d === 1 ? 'gestern' : `vor ${d} Tagen`;
+}
+async function loadSightings() {
+  state.sightings = await api('/sightings');
+  renderSightings(); renderSightingMarkers();
+}
+function renderSightingMarkers() {
+  if (!map) return;
+  sightingLayer.clearLayers();
+  for (const sg of state.sightings) {
+    const ageDays = (Date.now() - new Date(sg.observed_at).getTime()) / 86400e3;
+    if (ageDays > 14) continue;
+    const opacity = Math.max(0.35, 1 - ageDays / 16);
+    const m = L.marker([sg.lat, sg.lng], { opacity, zIndexOffset: 500, draggable: sg.user_id === state.me.id || !!state.me.is_admin,
+      icon: L.divIcon({ className: '', html: `<div class="sighting ${spClass(sg.species)} ${ageDays < 1 ? 'fresh' : ''}"><span class="ico ico-faehrte"></span></div>`, iconSize: [30, 30], iconAnchor: [15, 15], popupAnchor: [0, -14] }) });
+    m.bindTooltip(`${sg.species} · ${SIGHTING_KINDS[sg.kind] || sg.kind} · ${ageText(sg.observed_at)}`);
+    m.on('dragend', async () => { const p = m.getLatLng(); await api('/sightings/' + sg.id, { method: 'PUT', body: { lat: p.lat, lng: p.lng } }); });
+    m.on('click', () => {
+      const mine = sg.user_id === state.me.id || state.me.is_admin;
+      m.bindPopup(`<h3>${esc(sg.species)}</h3><div>${esc(SIGHTING_KINDS[sg.kind] || sg.kind)} · ${fmtDT(sg.observed_at)} (${ageText(sg.observed_at)})</div>
+        ${sg.note ? `<div class="muted small">„${esc(sg.note)}“</div>` : ''}<div class="muted small">gemeldet von ${esc(sg.user_name || 'unbekannt')}</div>
+        ${mine ? `<div class="row"><button class="btn sm" data-act="edit">Bearbeiten</button><button class="btn sm danger" data-act="del">Löschen</button></div>` : ''}`).openPopup();
+      const pop = m.getPopup().getElement();
+      $('[data-act="edit"]', pop)?.addEventListener('click', () => { map.closePopup(); sightingDialog(sg); });
+      $('[data-act="del"]', pop)?.addEventListener('click', async () => { if (confirm('Meldung löschen?')) { map.closePopup(); await api('/sightings/' + sg.id, { method: 'DELETE' }); } });
+    });
+    sightingLayer.addLayer(m);
+  }
+}
+function renderSightings() {
+  const recent = state.sightings.filter(sg => (Date.now() - new Date(sg.observed_at).getTime()) / 86400e3 <= 14);
+  $('#sightings-count').textContent = recent.length ? `${recent.length} in den letzten 14 Tagen` : '';
+  $('#sightings-list').innerHTML = recent.length ? recent.slice(0, 12).map(sg => `
+    <div class="person sighting-item" data-id="${sg.id}" style="border-left-color:var(--antler);cursor:pointer"><span class="dot ${spClass(sg.species)}"><span class="ico ico-faehrte"></span></span>
+      <div class="who"><b>${esc(sg.species)} · ${esc(SIGHTING_KINDS[sg.kind] || sg.kind)}</b><span>${sg.note ? esc(sg.note) + ' · ' : ''}${esc(sg.user_name || '')}</span></div>
+      <div class="since">${ageText(sg.observed_at)}</div></div>`).join('')
+    : '<p class="muted small">Keine aktuellen Fährten. Mit dem Werkzeug „Fährte“ auf der Karte melden.</p>';
+  $$('#sightings-list [data-id]').forEach(el => el.onclick = () => { const sg = state.sightings.find(x => x.id === Number(el.dataset.id)); if (sg && map) map.setView([sg.lat, sg.lng], Math.max(map.getZoom(), 15)); });
+}
+function sightingDialog(sg) {
+  const isNew = !sg.id;
+  const when = sg.observed_at ? new Date(sg.observed_at) : new Date();
+  openDialog(`<h2>${isNew ? 'Fährte / Beobachtung melden' : 'Meldung bearbeiten'}</h2>
+    <label>Wildart<select id="sg-species">${SPECIES.map(x => `<option ${x === (sg.species || 'Schwarzwild') ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
+    <label>Was<select id="sg-kind">${Object.entries(SIGHTING_KINDS).map(([k, v]) => `<option value="${k}" ${k === (sg.kind || 'faehrte') ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+    <label>Wann<div class="seg" id="sg-when"><button type="button" data-w="now">Jetzt</button><button type="button" data-w="night">Heute Nacht</button><button type="button" data-w="yesterday">Gestern</button><button type="button" data-w="custom">Genau</button></div>
+      <input type="datetime-local" id="sg-time" value="${toLocalInput(when)}"></label>
+    <label>Notiz<input id="sg-note" maxlength="300" value="${esc(sg.note || '')}" placeholder="z. B. Rotte mit Frischlingen Richtung Maisfeld"></label>
+    <div class="row"><button class="btn primary" id="sg-save">${isNew ? 'Melden' : 'Speichern'}</button><button class="btn" data-close>Abbrechen</button></div>
+    ${isNew ? '<p class="muted small">Alle Nutzer erhalten eine Push-Nachricht. Die Markierung verblasst mit der Zeit und verschwindet nach 14 Tagen von der Karte.</p>' : ''}`, d => {
+    $$('#sg-when button', d).forEach(b => b.onclick = () => {
+      const t = new Date();
+      if (b.dataset.w === 'night') { t.setHours(2, 0, 0, 0); }
+      if (b.dataset.w === 'yesterday') { t.setDate(t.getDate() - 1); t.setHours(18, 0, 0, 0); }
+      if (b.dataset.w !== 'custom') $('#sg-time', d).value = toLocalInput(t);
+      $$('#sg-when button', d).forEach(x => x.classList.toggle('active', x === b));
+      if (b.dataset.w === 'custom') $('#sg-time', d).focus();
+    });
+    $('#sg-save', d).onclick = async () => {
+      const body = { species: $('#sg-species', d).value, kind: $('#sg-kind', d).value, note: $('#sg-note', d).value, observed_at: new Date($('#sg-time', d).value).toISOString(), lat: sg.lat, lng: sg.lng };
+      try {
+        if (isNew) { await api('/sightings', { body }); toast('Fährte gemeldet'); }
+        else { await api('/sightings/' + sg.id, { method: 'PUT', body }); toast('Gespeichert'); }
+        closeDialog();
+      } catch (e) { toast(e.message, 'error'); }
+    };
   });
 }
 

@@ -170,6 +170,53 @@ export function createApp({ onChange = () => {} } = {}) {
     await changed('revier'); res.json({ ok: true });
   }));
 
+  // ---------- Fährten / Wildbeobachtungen ----------
+  const SPECIES = ['Schwarzwild', 'Rehwild', 'Rotwild', 'Damwild', 'Muffelwild', 'Fuchs', 'Dachs', 'Waschbär', 'Wolf', 'Sonstiges'];
+  const SIGHTING_KINDS = ['faehrte', 'sichtung', 'losung', 'wuehlstelle', 'suhle', 'wildschaden', 'riss', 'fallwild', 'wildkamera'];
+  const SIGHTING_SELECT = 'SELECT s.*, u.name AS user_name, u.color AS user_color FROM sightings s LEFT JOIN users u ON u.id = s.user_id';
+  app.get('/api/sightings', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const since = new Date(Date.now() - 30 * 86400e3).toISOString();
+    res.json(await db.all(`${SIGHTING_SELECT} WHERE s.observed_at > ? ORDER BY s.observed_at DESC`, [since]));
+  }));
+  app.post('/api/sightings', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const lat = num(req.body.lat), lng = num(req.body.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) throw httpError(400, 'Position fehlt.');
+    const species = SPECIES.includes(req.body.species) ? req.body.species : 'Sonstiges';
+    const kind = SIGHTING_KINDS.includes(req.body.kind) ? req.body.kind : 'faehrte';
+    const observed = req.body.observed_at ? new Date(req.body.observed_at) : new Date();
+    if (Number.isNaN(observed.getTime())) throw httpError(400, 'Ungültiger Zeitpunkt.');
+    const id = await db.insert('INSERT INTO sightings (user_id, species, kind, note, lat, lng, observed_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [req.user.id, species, kind, str(req.body.note, 300), lat, lng, observed.toISOString(), now()]);
+    await changed('sightings');
+    const kindText = { faehrte: 'Fährte', sichtung: 'Sichtung', losung: 'Losung', wuehlstelle: 'Wühlstelle', suhle: 'Suhle', wildschaden: 'Wildschaden', riss: 'Riss', fallwild: 'Fallwild', wildkamera: 'Wildkamera-Aufnahme' }[kind];
+    await notify('all', { title: `${species}: ${kindText}`, body: `${req.user.name} hat ${species} gemeldet (${kindText}, ${fmtTime(observed)}).${req.body.note ? ' – ' + str(req.body.note, 100) : ''}`, url: `/#karte`, tag: `sighting-${id}` }, req.user.id);
+    res.json(await db.get(`${SIGHTING_SELECT} WHERE s.id = ?`, [id]));
+  }));
+  app.put('/api/sightings/:id', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const sg = await db.get('SELECT * FROM sightings WHERE id = ?', [req.params.id]);
+    if (!sg) throw httpError(404, 'Nicht gefunden.');
+    if (sg.user_id !== req.user.id && !req.user.is_admin) throw httpError(403, 'Nur eigene Meldungen können geändert werden.');
+    const observed = req.body.observed_at ? new Date(req.body.observed_at) : null;
+    await db.run('UPDATE sightings SET species = ?, kind = ?, note = ?, lat = ?, lng = ?, observed_at = ? WHERE id = ?', [
+      SPECIES.includes(req.body.species) ? req.body.species : sg.species, SIGHTING_KINDS.includes(req.body.kind) ? req.body.kind : sg.kind,
+      str(req.body.note ?? sg.note, 300), num(req.body.lat) ?? sg.lat, num(req.body.lng) ?? sg.lng,
+      observed && !Number.isNaN(observed.getTime()) ? observed.toISOString() : sg.observed_at, sg.id]);
+    await changed('sightings');
+    res.json(await db.get(`${SIGHTING_SELECT} WHERE s.id = ?`, [sg.id]));
+  }));
+  app.delete('/api/sightings/:id', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const sg = await db.get('SELECT * FROM sightings WHERE id = ?', [req.params.id]);
+    if (!sg) throw httpError(404, 'Nicht gefunden.');
+    if (sg.user_id !== req.user.id && !req.user.is_admin) throw httpError(403, 'Nur eigene Meldungen können gelöscht werden.');
+    await db.run('DELETE FROM sightings WHERE id = ?', [sg.id]);
+    await changed('sightings');
+    res.json({ ok: true });
+  }));
+
   // ---------- Wetter ----------
   app.get('/api/weather', requireAuth, wrap(async (req, res) => {
     const center = await getSetting('center', { lat: 51.1657, lng: 10.4515 });

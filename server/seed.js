@@ -35,6 +35,11 @@ export async function seedDemo() {
   await db.run('INSERT INTO notifications (user_id, title, body, url, created_at) VALUES (?, ?, ?, ?, ?)', [hans.id, 'Grete hat bestätigt', 'Grete hat deine Ankündigung für heute Abend bestätigt. „Passt, ich bleibe am Buchenhang“', `/#plan-${planId}`, now()]);
   await db.run('INSERT INTO notifications (user_id, title, body, url, created_at) VALUES (?, ?, ?, ?, ?)', [hans.id, 'Grete ist im Revier', 'Grete ist jetzt auf Kanzel Buchenhang. – bis zum Dunkelwerden', '/#karte', now()]);
 
+  const lastNight = new Date(); lastNight.setHours(2, 0, 0, 0);
+  await db.run("INSERT INTO sightings (user_id, species, kind, note, lat, lng, observed_at, created_at) VALUES (?, 'Schwarzwild', 'faehrte', ?, ?, ?, ?, ?)", [grete.id, 'Rotte, ca. 6 Stück, Richtung Maisfeld', 50.9470, 10.2080, lastNight.toISOString(), now()]);
+  await db.run("INSERT INTO sightings (user_id, species, kind, note, lat, lng, observed_at, created_at) VALUES (?, 'Rehwild', 'sichtung', ?, ?, ?, ?, ?)", [karl.id, 'Bock mit zwei Ricken am Waldrand', 50.9580, 10.1950, new Date(Date.now() - 3 * 86400e3).toISOString(), now()]);
+  await db.run("INSERT INTO sightings (user_id, species, kind, note, lat, lng, observed_at, created_at) VALUES (?, 'Schwarzwild', 'wuehlstelle', ?, ?, ?, ?, ?)", [hans.id, 'Wiese am Bachtal frisch umgebrochen', 50.9435, 10.1985, new Date(Date.now() - 9 * 86400e3).toISOString(), now()]);
+
   const date = new Date(); date.setDate(date.getDate() + 30);
   const huntId = await db.insert('INSERT INTO hunts (title, date, meet_time, meet_point, leader, description, status, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ['Herbstdrückjagd Buchenhain', date.toISOString().slice(0, 10), '08:00', 'Parkplatz Forsthaus', 'Hans',

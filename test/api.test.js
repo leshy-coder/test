@@ -149,6 +149,23 @@ test('Passwort ändern und Admin-Funktionen', async () => {
   assert.equal((await call('/users', { token: hans.token })).data.some(u => u.name === 'Karl'), false);
 });
 
+test('Fährten melden, bearbeiten, löschen', async () => {
+  const bad = await call('/sightings', { token: hans.token, body: { species: 'Schwarzwild' } });
+  assert.equal(bad.status, 400);
+  const sg = await call('/sightings', { token: hans.token, body: { species: 'Schwarzwild', kind: 'faehrte', note: 'Rotte Richtung Mais', lat: 50.95, lng: 10.2, observed_at: new Date(Date.now() - 6 * 3600e3).toISOString() } });
+  assert.equal(sg.status, 200); assert.equal(sg.data.user_name, 'Hans');
+  const list = (await call('/sightings', { token: grete.token })).data;
+  assert.equal(list.length, 1); assert.equal(list[0].species, 'Schwarzwild');
+  assert.ok((await call('/notifications', { token: grete.token })).data.some(x => x.title.startsWith('Schwarzwild')));
+  const foreign = await call(`/sightings/${sg.data.id}`, { token: grete.token, method: 'PUT', body: { note: 'x' } });
+  assert.equal(foreign.status, 403, 'fremde Meldung nicht änderbar');
+  const upd = await call(`/sightings/${sg.data.id}`, { token: hans.token, method: 'PUT', body: { kind: 'sichtung', lat: 50.951 } });
+  assert.equal(upd.data.kind, 'sichtung'); assert.equal(upd.data.lat, 50.951);
+  assert.equal((await call(`/sightings/${sg.data.id}`, { token: grete.token, method: 'DELETE' })).status, 403);
+  assert.equal((await call(`/sightings/${sg.data.id}`, { token: hans.token, method: 'DELETE' })).status, 200);
+  assert.equal((await call('/sightings', { token: hans.token })).data.length, 0);
+});
+
 test('Push-Schlüssel und Abonnement', async () => {
   const k = (await call('/push/key')).data;
   assert.ok(k.publicKey.length > 60);
