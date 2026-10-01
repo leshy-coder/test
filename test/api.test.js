@@ -186,6 +186,68 @@ test('Anschuss mit Foto, Fluchtrichtung und Status', async () => {
   assert.equal((await call(`/shots/${sh.data.id}`, { token: hans.token, method: 'DELETE' })).status, 200);
 });
 
+test('Fluchtweg als Punktliste und Nachsuche-Strecke', async () => {
+  const sh = (await call('/shots', { token: hans.token, body: { species: 'Rotwild', lat: 50.95, lng: 10.2, flight_path: [[50.951, 10.2], [50.952, 10.201]] } })).data;
+  assert.ok(sh.flight_bearing < 1 || sh.flight_bearing > 359, 'Peilung aus erstem Wegpunkt');
+  assert.equal(JSON.parse(sh.flight_path).length, 2);
+  const upd = (await call(`/shots/${sh.id}`, { token: hans.token, method: 'PUT', body: { flight_path: [[50.95, 10.201], [50.95, 10.202], [50.9505, 10.203]] } })).data;
+  assert.equal(JSON.parse(upd.flight_path).length, 3); assert.ok(Math.abs(upd.flight_bearing - 90) < 2, 'Peilung nach Osten');
+  const cleared = (await call(`/shots/${sh.id}`, { token: hans.token, method: 'PUT', body: { flight_path: [] } })).data;
+  assert.equal(cleared.flight_path, null);
+  const tr = (await call(`/shots/${sh.id}/tracks`, { token: hans.token, body: { points: [] } })).data;
+  const saved = (await call(`/shots/${sh.id}/tracks/${tr.id}`, { token: hans.token, method: 'PUT', body: { points: [[50.95, 10.2], [50.951, 10.2], [50.952, 10.2]], ended: true } })).data;
+  assert.ok(saved.distance_m > 200 && saved.distance_m < 240, 'ca. 222 m');
+  assert.equal((await call(`/shots/${sh.id}/tracks/${tr.id}`, { token: grete.token, method: 'PUT', body: { points: [] } })).status, 403, 'fremde Aufzeichnung (Grete ist kein Admin)');
+  const list = (await call('/shots', { token: hans.token })).data.find(x => x.id === sh.id);
+  assert.ok(list.track_m > 200);
+  assert.equal((await call(`/shots/${sh.id}/tracks`, { token: hans.token })).data.length, 1);
+  await call(`/shots/${sh.id}`, { token: hans.token, method: 'DELETE' });
+});
+
+test('Gebiete anlegen, ändern, löschen', async () => {
+  const poly = { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[[10.19, 50.94], [10.2, 50.94], [10.2, 50.95], [10.19, 50.94]]] } };
+  assert.equal((await call('/areas', { token: hans.token, body: { name: 'x', geojson: {} } })).status, 400);
+  const a = (await call('/areas', { token: hans.token, body: { name: 'Elsbruch', color: '#3b7dd8', geojson: poly, notes: 'Sauen-Einstand' } })).data;
+  let list = (await call('/areas', { token: grete.token })).data;
+  assert.equal(list.length, 1); assert.equal(list[0].name, 'Elsbruch'); assert.equal(list[0].geojson.geometry.type, 'Polygon');
+  await call(`/areas/${a.id}`, { token: grete.token, method: 'PUT', body: { color: 'ungültig', name: 'Elsbruch Nord' } });
+  list = (await call('/areas', { token: grete.token })).data;
+  assert.equal(list[0].name, 'Elsbruch Nord'); assert.equal(list[0].color, '#3b7dd8', 'ungültige Farbe ignoriert');
+  await call(`/areas/${a.id}`, { token: hans.token, method: 'DELETE' });
+  assert.equal((await call('/areas', { token: hans.token })).data.length, 0);
+});
+
+test('Jagdarten mit Materialliste', async () => {
+  const h = (await call('/hunts', { token: hans.token, body: { title: 'Entenstrich am Teich', date: '2026-11-20', type: 'vogeljagd' } })).data;
+  assert.equal(h.type, 'vogeljagd'); assert.ok(h.tasks.some(t => t.text.includes('Apportierhunde')), 'Checkliste passend zur Jagdart');
+  let full = (await call(`/hunts/${h.id}/items`, { token: hans.token, body: { text: 'Lockenten', person: '' } })).data;
+  assert.equal(full.items.length, 1);
+  full = (await call(`/hunts/${h.id}/items/${full.items[0].id}`, { token: grete.token, method: 'PUT', body: { person: 'Grete' } })).data;
+  assert.equal(full.items[0].person, 'Grete');
+  full = (await call(`/hunts/${h.id}/items/${full.items[0].id}`, { token: grete.token, method: 'PUT', body: { done: true } })).data;
+  assert.equal(full.items[0].done, 1);
+  full = (await call(`/hunts/${h.id}`, { token: hans.token, method: 'PUT', body: { type: 'buschieren' } })).data;
+  assert.equal(full.type, 'buschieren');
+  full = (await call(`/hunts/${h.id}/items/${full.items[0].id}`, { token: hans.token, method: 'DELETE' })).data;
+  assert.equal(full.items.length, 0);
+  await call(`/hunts/${h.id}`, { token: hans.token, method: 'DELETE' });
+});
+
+test('Termine mit Zu-/Absage und Mitbringliste', async () => {
+  assert.equal((await call('/events', { token: hans.token, body: { title: 'x', date: 'morgen' } })).status, 400);
+  const e = (await call('/events', { token: hans.token, body: { title: 'Hegeringsitzung', date: '2026-12-05', time: '19:30', place: 'Gasthaus Linde' } })).data;
+  assert.ok((await call('/notifications', { token: grete.token })).data.some(x => x.title.includes('Hegeringsitzung')));
+  let full = (await call(`/events/${e.id}/respond`, { token: grete.token, body: { status: 'zusage', brings: 'Beamer' } })).data;
+  assert.equal(full.responses.length, 1); assert.equal(full.responses[0].status, 'zusage'); assert.equal(full.responses[0].brings, 'Beamer');
+  full = (await call(`/events/${e.id}/respond`, { token: grete.token, body: { status: 'absage' } })).data;
+  assert.equal(full.responses[0].status, 'absage'); assert.equal(full.responses[0].brings, 'Beamer', 'Mitbringsel bleibt erhalten');
+  full = (await call(`/events/${e.id}`, { token: hans.token, method: 'PUT', body: { place: 'Forsthaus' } })).data;
+  assert.equal(full.place, 'Forsthaus');
+  assert.equal((await call('/events', { token: hans.token })).data.length, 1);
+  await call(`/events/${e.id}`, { token: hans.token, method: 'DELETE' });
+  assert.equal((await call('/events', { token: hans.token })).data.length, 0);
+});
+
 test('Push-Schlüssel und Abonnement', async () => {
   const k = (await call('/push/key')).data;
   assert.ok(k.publicKey.length > 60);

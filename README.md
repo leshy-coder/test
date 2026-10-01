@@ -8,7 +8,12 @@ Jagd-Webanwendung für die Jagdgemeinschaft eines Reviers: aktuelles Wetter mit 
 - **Karte** (Leaflet, topografisch / Straße / Luftbild): Reviergrenze als Polygon zeichnen und bearbeiten, Kanzeln, Wildkameras und Kirrungen per Tipp setzen, verschieben, benennen. Besetzte Kanzeln pulsieren rot, angekündigte sind gold umrandet. Windpfeil direkt auf der Karte, eigener Standort per GPS.
 - **Ein-/Auschecken**: „Pirsch“ oder konkrete Kanzel mit Notiz. Alle anderen Nutzer bekommen eine Push-Nachricht beim Ein- und Auschecken.
 - **Ankündigen** („Ich möchte heute ca. 21 Uhr auf Kanzel X“): alle Nutzer werden per Push informiert, sehen die Anfrage und können sie bestätigen (optional mit Kommentar). Der Antragsteller sieht pro Nutzer: nicht gelesen ○, gelesen ✓, bestätigt ✓✓, und erhält bei Bestätigung selbst eine Push-Nachricht. Aus der Ankündigung kann direkt eingecheckt werden.
-- **Drückjagd-Planung**: Jagden mit Datum, Treffpunkt, Jagdleitung, Belehrungstext und Status; Teilnehmer mit Rolle (Jagdleiter, Schütze, Treiber, Hundeführer, Ansteller, Helfer), Standzuweisung, Treiben-Zuordnung und Zusage; Treiben mit Zeiten und Notizen; Checkliste mit Standardaufgaben; Streckenliste.
+- **Fährten und Wildbeobachtungen**: Wildart, Art (Fährte, Sichtung, Losung, Wühlstelle, Suhle, Wildschaden, Riss, Fallwild, Wildkamera), Zeitpunkt, Notiz. Marker verblassen mit dem Alter und verschwinden nach 14 Tagen.
+- **Anschuss und Nachsuche**: Anschuss mit Fotos, Pirschzeichen und Notiz markieren, Fluchtweg Punkt für Punkt auf der Karte setzen und nachträglich bearbeiten, Nachsuche per GPS aufzeichnen (gelaufene Strecke als Linie), Status offen / Nachsuche / gefunden mit Fundort / abgebrochen, Push an alle.
+- **Gebiete**: benannte Flächen innerhalb des Reviers (z. B. „Elsbruch“) mit eigener Farbe und leicht transparenter Füllung, bearbeitbar.
+- **Entfernungsmesser** und **Ebenen-Filter** (Kanzeln, Kameras, Kirrungen, Beschriftungen, Fährten, Anschüsse, Strecken, Gebiete, Grenze ein-/ausblenden), einklappbare Werkzeugleiste.
+- **Planung aller Jagdarten**: Drückjagd, Gemeinschaftsansitz, Buschieren, Vogeljagd, Frettieren, Fallenjagd, Revierarbeit mit Datum, Treffpunkt, Leitung, Belehrungstext und Status; Teilnehmer mit Rolle, Standzuweisung, Treiben-Zuordnung und Zusage; Materialliste („wer bringt was mit“); Checkliste passend zur Jagdart; Streckenliste.
+- **Terminkalender**: Hegeringsitzung, Trophäenschau und frei beschreibbare Termine mit Zusage/Vielleicht/Absage und Mitbringliste je Teilnehmer, Push an alle.
 - **Echtzeit**: WebSocket-Broadcast, Online-Anzeige, In-App-Benachrichtigungsliste.
 - **PWA**: installierbar auf Android/iOS (Zum Home-Bildschirm), Web-Push über VAPID, Offline-Cache der App-Hülle.
 

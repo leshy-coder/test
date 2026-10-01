@@ -66,18 +66,28 @@
     <section class="view" id="view-karte">
       <div class="map-wrap">
         <div id="map"></div>
-        <div class="map-toolbar">
+        <div class="map-toolbar" id="map-toolbar">
+          <button class="tool toggle" id="tools-toggle" title="Werkzeuge ein-/ausklappen"><span class="ico ico-tools"></span><span class="tl">Werkzeuge</span></button>
           <button class="tool" data-tool="kanzel" title="Kanzel setzen"><span class="ico ico-kanzel"></span>Kanzel</button>
           <button class="tool" data-tool="kamera" title="Wildkamera setzen"><span class="ico ico-kamera"></span>Kamera</button>
           <button class="tool" data-tool="kirrung" title="Kirrung setzen"><span class="ico ico-kirrung"></span>Kirrung</button>
           <button class="tool" data-tool="faehrte" title="Fährte / Wildbeobachtung melden"><span class="ico ico-faehrte"></span>Fährte</button>
           <button class="tool" data-tool="anschuss" title="Anschuss markieren (Nachsuche)"><span class="ico ico-anschuss"></span>Anschuss</button>
           <button class="tool" data-tool="messen" title="Entfernung messen"><span class="ico ico-messen"></span>Messen</button>
+          <button class="tool" data-tool="gebiet" title="Gebiet (z. B. Elsbruch) einzeichnen"><span class="ico ico-gebiet"></span>Gebiet</button>
           <button class="tool" data-tool="grenze" title="Reviergrenze zeichnen"><span class="ico ico-grenze"></span>Grenze</button>
-          <button class="tool" data-tool="layer" title="Kartenansicht"><span class="ico ico-layer"></span>Karte</button>
+          <button class="tool" data-tool="layer" title="Kartenansicht und Filter"><span class="ico ico-layer"></span>Ebenen</button>
           <button class="tool" data-tool="locate" title="Mein Standort"><span class="ico ico-locate"></span>Ich</button>
         </div>
         <div class="map-hint hidden" id="map-hint"></div>
+        <div class="measure-box hidden" id="path-box">
+          <div><b id="path-title">Fluchtweg</b><span id="path-info">Punkte auf der Karte antippen</span></div>
+          <div class="row"><button class="btn sm" id="path-undo">Rückgängig</button><button class="btn sm" id="path-clear">Leeren</button><button class="btn sm primary" id="path-save">Speichern</button><button class="btn sm" id="path-cancel">Abbrechen</button></div>
+        </div>
+        <div class="measure-box hidden" id="track-box">
+          <div><b id="track-dist">0 m</b><span id="track-info">Aufzeichnung läuft …</span></div>
+          <div class="row"><button class="btn sm danger" id="track-stop">Aufzeichnung beenden</button></div>
+        </div>
         <div class="measure-box hidden" id="measure-box">
           <div><b id="measure-total">0 m</b><span id="measure-last"></span></div>
           <div class="row"><button class="btn sm" id="measure-undo">Rückgängig</button><button class="btn sm" id="measure-clear">Neu</button><button class="btn sm primary" id="measure-done">Fertig</button></div>
@@ -194,7 +204,7 @@
     <button data-view="karte" class="active"><svg viewBox="0 0 24 24"><path d="M3 5l6-2 6 2 6-2v16l-6 2-6-2-6 2V5zm6 0v14m6-12v14"/></svg><span>Karte</span></button>
     <button data-view="wetter"><svg viewBox="0 0 24 24"><path d="M7 18a4 4 0 0 1-.5-8A6 6 0 0 1 18 9a4 4 0 0 1 0 9H7z"/></svg><span>Wetter</span></button>
     <button data-view="ansitz"><svg viewBox="0 0 24 24"><path d="M4 21V10l8-7 8 7v11h-5v-6H9v6H4z"/></svg><span>Ansitz</span><em class="dot hidden" id="nav-ansitz-dot"></em></button>
-    <button data-view="jagd"><svg viewBox="0 0 24 24"><path d="M4 4h16v4H4zM6 8v12h12V8M9 12h6M9 16h6"/></svg><span>Drückjagd</span></button>
+    <button data-view="jagd"><svg viewBox="0 0 24 24"><path d="M4 4h16v4H4zM6 8v12h12V8M9 12h6M9 16h6"/></svg><span>Planung</span></button>
     <button data-view="mehr"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg><span>Mehr</span></button>
   </nav>
 

@@ -38,14 +38,19 @@ export async function notify(userIds, payload, excludeUserId = null) {
   if (!ids.length) return;
   const ts = now();
   for (const id of ids) await db.run('INSERT INTO notifications (user_id, title, body, url, created_at) VALUES (?, ?, ?, ?, ?)', [id, payload.title, payload.body, payload.url || '/', ts]);
-  await getVapidKeys();
-  const subs = await db.all(`SELECT endpoint, sub_json FROM push_subs WHERE user_id IN (${ids.map(() => '?').join(',')})`, ids);
-  const body = JSON.stringify({ ...payload, url: payload.url || '/' });
-  await Promise.allSettled(subs.map(async s => {
-    try { await webpush.sendNotification(JSON.parse(s.sub_json), body, { TTL: 6 * 3600 }); }
-    catch (err) {
-      if (err.statusCode === 404 || err.statusCode === 410) await removeSubscription(s.endpoint);
-      else console.warn('Push fehlgeschlagen:', err.statusCode || err.message);
-    }
-  }));
+  // Der eigentliche Push-Versand läuft im Hintergrund weiter, damit die Antwort an den Nutzer nicht wartet.
+  const sending = (async () => {
+    await getVapidKeys();
+    const subs = await db.all(`SELECT endpoint, sub_json FROM push_subs WHERE user_id IN (${ids.map(() => '?').join(',')})`, ids);
+    const body = JSON.stringify({ ...payload, url: payload.url || '/' });
+    await Promise.allSettled(subs.map(async s => {
+      try { await webpush.sendNotification(JSON.parse(s.sub_json), body, { TTL: 6 * 3600, timeout: 4000 }); }
+      catch (err) {
+        if (err.statusCode === 404 || err.statusCode === 410) await removeSubscription(s.endpoint);
+        else console.warn('Push fehlgeschlagen:', err.statusCode || err.message);
+      }
+    }));
+  })().catch(e => console.warn('Push-Versand fehlgeschlagen', e.message));
+  // Auf Netlify muss die Function wissen, dass noch Arbeit läuft (waitUntil); lokal läuft es einfach weiter.
+  if (typeof globalThis.__waitUntil === 'function') globalThis.__waitUntil(sending);
 }

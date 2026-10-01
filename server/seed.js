@@ -40,8 +40,12 @@ export async function seedDemo() {
   await db.run("INSERT INTO sightings (user_id, species, kind, note, lat, lng, observed_at, created_at) VALUES (?, 'Rehwild', 'sichtung', ?, ?, ?, ?, ?)", [karl.id, 'Bock mit zwei Ricken am Waldrand', 50.9580, 10.1950, new Date(Date.now() - 3 * 86400e3).toISOString(), now()]);
   await db.run("INSERT INTO sightings (user_id, species, kind, note, lat, lng, observed_at, created_at) VALUES (?, 'Schwarzwild', 'wuehlstelle', ?, ?, ?, ?, ?)", [hans.id, 'Wiese am Bachtal frisch umgebrochen', 50.9435, 10.1985, new Date(Date.now() - 9 * 86400e3).toISOString(), now()]);
 
-  await db.run("INSERT INTO shots (user_id, species, shot_at, lat, lng, flight_bearing, signs, note, status, feature_id, created_at) VALUES (?, 'Rehwild (Bock)', ?, ?, ?, ?, ?, ?, 'nachsuche', ?, ?)",
-    [karl.id, new Date(Date.now() - 2 * 3600e3).toISOString(), 50.9500, 10.2120, 230, 'Schweiß hell, Schnitthaar', 'Blattschuss vermutet, Stück sofort ab in die Dickung', ids['Kanzel Buchenhang'], now()]);
+  await db.run("INSERT INTO shots (user_id, species, shot_at, lat, lng, flight_bearing, flight_path, signs, note, status, feature_id, created_at) VALUES (?, 'Rehwild (Bock)', ?, ?, ?, ?, ?, ?, ?, 'nachsuche', ?, ?)",
+    [karl.id, new Date(Date.now() - 2 * 3600e3).toISOString(), 50.9500, 10.2120, 230, JSON.stringify([[50.9492, 10.2105], [50.9486, 10.2092], [50.9478, 10.2088]]), 'Schweiß hell, Schnitthaar', 'Blattschuss vermutet, Stück sofort ab in die Dickung', ids['Kanzel Buchenhang'], now()]);
+  await db.run("INSERT INTO areas (name, color, geojson, notes, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?)", ['Elsbruch', '#3b7dd8', JSON.stringify({ type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[[10.188, 50.943], [10.204, 50.942], [10.206, 50.952], [10.190, 50.953], [10.188, 50.943]]] } }), 'Feuchter Erlenbruch, Sauen-Einstand', hans.id, now()]);
+  await db.run("INSERT INTO areas (name, color, geojson, notes, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?)", ['Buchenhang', '#c9a24b', JSON.stringify({ type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[[10.208, 50.944], [10.226, 50.942], [10.228, 50.956], [10.210, 50.958], [10.208, 50.944]]] } }), '', hans.id, now()]);
+  const ev = await db.insert('INSERT INTO events (title, date, time, place, description, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', ['Hegeringsitzung', new Date(Date.now() + 12 * 86400e3).toISOString().slice(0, 10), '19:30', 'Gasthaus Linde', 'Tagesordnung: Abschussplanung, Trophäenschau-Vorbereitung', hans.id, now()]);
+  await db.run('INSERT INTO event_responses (event_id, user_id, status, brings, updated_at) VALUES (?, ?, ?, ?, ?)', [ev, grete.id, 'zusage', 'Beamer', now()]);
 
   const date = new Date(); date.setDate(date.getDate() + 30);
   const huntId = await db.insert('INSERT INTO hunts (title, date, meet_time, meet_point, leader, description, status, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
@@ -52,6 +56,7 @@ export async function seedDemo() {
   for (const p of [['Hans', 'jagdleiter', null, null, '', 1], ['Grete', 'schuetze', ids['Kanzel Buchenhang'], d1, '0171 2345678', 1], ['Karl', 'schuetze', ids['Drückjagdbock Kreuzung'], d1, '', 0], ['Peter M.', 'hundefuehrer', null, d2, '', 1], ['Treibergruppe Dorf', 'treiber', null, d1, '', 0]]) {
     await db.run('INSERT INTO hunt_participants (hunt_id, name, role, feature_id, drive_id, phone, confirmed) VALUES (?, ?, ?, ?, ?, ?, ?)', [huntId, ...p]);
   }
+  for (const [text, person] of [['Wildwanne und Wasser', 'Karl'], ['Signalwesten für Treiber (10 Stück)', 'Hans'], ['Kaffee und Kuchen fürs Schüsseltreiben', 'Grete'], ['Funkgeräte', '']]) await db.run('INSERT INTO hunt_items (hunt_id, text, person) VALUES (?, ?, ?)', [huntId, text, person]);
   for (const [text, done, who] of [['Einladungen verschicken', 1, 'Hans'], ['Stände kontrollieren und freischneiden', 1, 'Karl'], ['Jagdleiter-Belehrung vorbereiten', 0, 'Hans'], ['Hundeführer organisieren', 1, 'Grete'], ['Streckenplatz und Wildwanne vorbereiten', 0, ''], ['Straßenschilder „Vorsicht Treibjagd“ beantragen', 0, 'Hans'], ['Schüsseltreiben planen', 0, 'Grete']]) {
     await db.run('INSERT INTO hunt_tasks (hunt_id, text, done, assignee) VALUES (?, ?, ?, ?)', [huntId, text, done, who]);
   }

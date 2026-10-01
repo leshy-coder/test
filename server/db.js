@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS plans (id {{ID}}, user_id INTEGER NOT NULL REFERENCES
   status TEXT NOT NULL DEFAULT 'offen', created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS plan_receipts (plan_id INTEGER NOT NULL REFERENCES plans(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   read_at TEXT, confirmed_at TEXT, comment TEXT NOT NULL DEFAULT '', PRIMARY KEY (plan_id, user_id));
+CREATE TABLE IF NOT EXISTS areas (id {{ID}}, name TEXT NOT NULL, color TEXT NOT NULL DEFAULT '#6b8e23', geojson TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '',
+  updated_by INTEGER, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS hunts (id {{ID}}, title TEXT NOT NULL, date TEXT NOT NULL, meet_time TEXT NOT NULL DEFAULT '', meet_point TEXT NOT NULL DEFAULT '',
   leader TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'planung', created_by INTEGER, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS hunt_participants (id {{ID}}, hunt_id INTEGER NOT NULL REFERENCES hunts(id) ON DELETE CASCADE, name TEXT NOT NULL,
@@ -37,6 +39,12 @@ CREATE TABLE IF NOT EXISTS hunt_drives (id {{ID}}, hunt_id INTEGER NOT NULL REFE
   start_time TEXT NOT NULL DEFAULT '', end_time TEXT NOT NULL DEFAULT '', geojson TEXT, notes TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS hunt_tasks (id {{ID}}, hunt_id INTEGER NOT NULL REFERENCES hunts(id) ON DELETE CASCADE, text TEXT NOT NULL,
   done INTEGER NOT NULL DEFAULT 0, assignee TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS hunt_items (id {{ID}}, hunt_id INTEGER NOT NULL REFERENCES hunts(id) ON DELETE CASCADE, text TEXT NOT NULL,
+  person TEXT NOT NULL DEFAULT '', done INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS events (id {{ID}}, title TEXT NOT NULL, date TEXT NOT NULL, time TEXT NOT NULL DEFAULT '', place TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '', created_by INTEGER, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS event_responses (event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'offen', brings TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL, PRIMARY KEY (event_id, user_id));
 CREATE TABLE IF NOT EXISTS hunt_bag (id {{ID}}, hunt_id INTEGER NOT NULL REFERENCES hunts(id) ON DELETE CASCADE, species TEXT NOT NULL,
   count INTEGER NOT NULL DEFAULT 1, shooter TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS sightings (id {{ID}}, user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, species TEXT NOT NULL, kind TEXT NOT NULL,
@@ -46,6 +54,8 @@ CREATE TABLE IF NOT EXISTS shots (id {{ID}}, user_id INTEGER REFERENCES users(id
   signs TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'offen', feature_id INTEGER REFERENCES features(id) ON DELETE SET NULL,
   found_lat DOUBLE PRECISION, found_lng DOUBLE PRECISION, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS shot_photos (id {{ID}}, shot_id INTEGER NOT NULL REFERENCES shots(id) ON DELETE CASCADE, data TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS shot_tracks (id {{ID}}, shot_id INTEGER NOT NULL REFERENCES shots(id) ON DELETE CASCADE, user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  points TEXT NOT NULL DEFAULT '[]', distance_m DOUBLE PRECISION NOT NULL DEFAULT 0, started_at TEXT NOT NULL, ended_at TEXT);
 CREATE TABLE IF NOT EXISTS push_subs (id {{ID}}, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, endpoint TEXT NOT NULL UNIQUE,
   sub_json TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS notifications (id {{ID}}, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, title TEXT NOT NULL, body TEXT NOT NULL,
@@ -63,6 +73,10 @@ async function sqliteAdapter() {
   // Migrationen älterer Datenbanken
   const cols = db.prepare('PRAGMA table_info(users)').all().map(c => c.name);
   if (!cols.includes('last_seen')) db.exec('ALTER TABLE users ADD COLUMN last_seen TEXT');
+  const huntCols = db.prepare('PRAGMA table_info(hunts)').all().map(c => c.name);
+  if (!huntCols.includes('type')) db.exec("ALTER TABLE hunts ADD COLUMN type TEXT NOT NULL DEFAULT 'drueckjagd'");
+  const shotCols = db.prepare('PRAGMA table_info(shots)').all().map(c => c.name);
+  if (!shotCols.includes('flight_path')) db.exec('ALTER TABLE shots ADD COLUMN flight_path TEXT');
   const plain = rows => rows.map(r => ({ ...r }));
   return {
     dialect: 'sqlite',
@@ -89,6 +103,8 @@ async function pgAdapter(url) {
     if (stmt.trim()) await query(stmt, []);
   }
   await query('CREATE UNIQUE INDEX IF NOT EXISTS users_name_lower ON users (LOWER(name))', []);
+  await query("ALTER TABLE hunts ADD COLUMN IF NOT EXISTS type TEXT NOT NULL DEFAULT 'drueckjagd'", []);
+  await query('ALTER TABLE shots ADD COLUMN IF NOT EXISTS flight_path TEXT', []);
   const q = (s, p) => query(toPg(s), p);
   return {
     dialect: 'pg',

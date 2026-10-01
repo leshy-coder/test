@@ -7,7 +7,8 @@ const state = {
   token: localStorage.getItem('token'),
   me: null, users: [], online: [],
   revier: { name: 'Mein Revier', center: { lat: 51.1657, lng: 10.4515, zoom: 6 }, boundaries: [], features: [] },
-  checkins: { active: [], history: [] }, sightings: [], shots: [],
+  checkins: { active: [], history: [] }, sightings: [], shots: [], areas: [], events: [],
+  layerFilter: Object.assign({ kanzel: true, kamera: true, kirrung: true, sonstiges: true, labels: true, sightings: true, shots: true, areas: true, grenze: true, tracks: true }, JSON.parse(localStorage.getItem('layerFilter') || '{}')),
   plans: [], hunts: [], hunt: null, huntTab: 'uebersicht',
   weather: null, notifications: [],
   view: 'karte', checkinMode: 'kanzel',
@@ -23,7 +24,16 @@ async function api(path, opts = {}) {
   if (res.status === 401 && state.token) { setToken(null); showAuth(); throw new Error('Nicht angemeldet.'); }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || 'Fehler ' + res.status);
+  if ((opts.method || (opts.body ? 'POST' : 'GET')) !== 'GET' && !opts.silent) refreshAfterWrite(path);
   return data;
+}
+const WRITE_REFRESH = [[/^\/(features|boundaries|revier)/, 'revier'], [/^\/areas/, 'areas'], [/^\/sightings/, 'sightings'], [/^\/shots/, 'shots'], [/^\/checkins/, 'checkins'], [/^\/plans/, 'plans'], [/^\/hunts/, 'hunts'], [/^\/events/, 'events'], [/^\/(admin|auth\/register)/, 'users']];
+let refreshTimer, refreshSet = new Set();
+function refreshAfterWrite(path) {
+  const hit = WRITE_REFRESH.find(([re]) => re.test(path)); if (!hit) return;
+  refreshSet.add(hit[1]); if (path.startsWith('/checkins')) refreshSet.add('plans');
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(() => { const names = [...refreshSet]; refreshSet.clear(); for (const n of names) loaders[n]?.({}); poll(); }, 80);
 }
 function setToken(t) { state.token = t; t ? localStorage.setItem('token', t) : localStorage.removeItem('token'); }
 
@@ -99,7 +109,7 @@ async function boot() {
   $('#btn-me').textContent = initials(state.me.name); $('#btn-me').style.background = state.me.color;
   $('#me-name').textContent = state.me.name;
   try { initMap(); } catch (e) { console.error('Karte konnte nicht initialisiert werden', e); toast('Karte nicht verfügbar', 'error'); }
-  await Promise.all([loadRevier(), loadUsers(), loadCheckins(), loadPlans(), loadHunts(), loadNotifications(), loadSightings(), loadShots()]);
+  await Promise.all([loadRevier(), loadUsers(), loadCheckins(), loadPlans(), loadHunts(), loadNotifications(), loadSightings(), loadShots(), loadAreas(), loadEvents()]);
   loadWeather();
   connectWs();
   startPolling();
@@ -111,7 +121,7 @@ async function boot() {
 
 // ---------- Live-Updates: Abfrage der Versionszähler (überall) + WebSocket (nur lokaler Server) ----------
 let ws, wsTimer, wsFailures = 0, wsEverOpen = false, pollTimer, knownVersions = null;
-const loaders = { users: () => loadUsers(), revier: loadRevier, checkins: () => loadCheckins().then(loadNotifications), plans: () => loadPlans().then(loadNotifications), hunts: refreshHunts, sightings: () => loadSightings().then(loadNotifications), shots: () => loadShots().then(loadNotifications) };
+const loaders = { users: () => loadUsers(), revier: loadRevier, checkins: () => loadCheckins().then(loadNotifications), plans: () => loadPlans().then(loadNotifications), hunts: refreshHunts, sightings: () => loadSightings().then(loadNotifications), shots: () => loadShots().then(loadNotifications), areas: loadAreas, events: () => loadEvents().then(loadNotifications) };
 function refreshHunts(data = {}) {
   return loadHunts().then(() => { if (state.hunt && (!data.hunt_id || data.hunt_id === state.hunt.id)) return loadHunt(state.hunt.id); }).then(loadNotifications);
 }
@@ -163,6 +173,7 @@ function routeFromHash() {
   let view = h;
   if (h.startsWith('plan-')) { view = 'ansitz'; setTimeout(() => $(`#plan-${h.slice(5)}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 200); }
   if (h.startsWith('jagd-')) { view = 'jagd'; loadHunt(Number(h.slice(5))); }
+  if (h.startsWith('termin-')) { view = 'jagd'; state.hunt = null; setTimeout(() => { renderHunts(); $(`#termin-${h.slice(7)}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 150); }
   if (!['karte', 'wetter', 'ansitz', 'jagd', 'mehr'].includes(view)) view = 'karte';
   showView(view);
 }
@@ -180,7 +191,16 @@ function showView(v) {
 async function loadUsers() { state.users = await api('/users'); }
 
 // ---------- Revier / Map ----------
-let map, layers = {}, boundaryLayer, featureLayer, checkinLayer, sightingLayer, shotLayer, measureLayer, drawControl, activeTool = null, meMarker, pendingFlightShot = null;
+let map, layers = {}, boundaryLayer, areaLayer, featureLayer, checkinLayer, sightingLayer, shotLayer, trackLayer, measureLayer, pathLayer, drawControl, activeTool = null, meMarker, pendingFlightShot = null;
+// Rendering bündeln: mehrere Datenänderungen kurz hintereinander führen nur zu einem Neuzeichnen
+const renderQueue = new Set(); let renderScheduled = false;
+function scheduleRender(fn) { renderQueue.add(fn); if (renderScheduled) return; renderScheduled = true; requestAnimationFrame(() => { renderScheduled = false; const fns = [...renderQueue]; renderQueue.clear(); fns.forEach(f => f()); }); }
+function applyLayerFilter() {
+  const f = state.layerFilter;
+  const want = { boundaryLayer: f.grenze, areaLayer: f.areas, sightingLayer: f.sightings, shotLayer: f.shots, trackLayer: f.tracks };
+  for (const [name, on] of Object.entries(want)) { const l = { boundaryLayer, areaLayer, sightingLayer, shotLayer, trackLayer }[name]; if (!l) continue; if (on && !map.hasLayer(l)) l.addTo(map); if (!on && map.hasLayer(l)) map.removeLayer(l); }
+  localStorage.setItem('layerFilter', JSON.stringify(f));
+}
 const featureKinds = { kanzel: 'Kanzel', kamera: 'Wildkamera', kirrung: 'Kirrung', sonstiges: 'Sonstiges' };
 
 function initMap() {
@@ -195,6 +215,9 @@ function initMap() {
   const saved = localStorage.getItem('layer') || 'topo';
   layers[saved].addTo(map);
   boundaryLayer = new L.FeatureGroup().addTo(map);
+  areaLayer = new L.FeatureGroup().addTo(map);
+  trackLayer = new L.FeatureGroup().addTo(map);
+  pathLayer = new L.FeatureGroup().addTo(map);
   featureLayer = new L.FeatureGroup().addTo(map);
   checkinLayer = new L.FeatureGroup().addTo(map);
   sightingLayer = new L.FeatureGroup().addTo(map);
@@ -204,25 +227,34 @@ function initMap() {
   map.on('click', onMapClick);
   map.on(L.Draw.Event.CREATED, async e => {
     const geo = e.layer.toGeoJSON();
+    if (activeTool === 'gebiet') { setTool(null); return areaDialog({ geojson: geo }); }
     await api('/boundaries', { body: { geojson: geo, name: 'Reviergrenze' } });
     setTool(null); toast('Reviergrenze gespeichert');
   });
   map.on(L.Draw.Event.EDITED, async e => {
     for (const layer of Object.values(e.layers._layers)) {
       if (layer.boundaryId) await api('/boundaries/' + layer.boundaryId, { method: 'PUT', body: { geojson: layer.toGeoJSON() } });
+      if (layer.areaId) await api('/areas/' + layer.areaId, { method: 'PUT', body: { geojson: layer.toGeoJSON() } });
     }
-    toast('Grenze aktualisiert');
+    toast('Gespeichert');
   });
   map.on(L.Draw.Event.DELETED, async e => {
-    for (const layer of Object.values(e.layers._layers)) if (layer.boundaryId) await api('/boundaries/' + layer.boundaryId, { method: 'DELETE' });
+    for (const layer of Object.values(e.layers._layers)) {
+      if (layer.boundaryId) await api('/boundaries/' + layer.boundaryId, { method: 'DELETE' });
+      if (layer.areaId) await api('/areas/' + layer.areaId, { method: 'DELETE' });
+    }
   });
 
-  $$('.map-toolbar .tool').forEach(b => b.onclick = () => onTool(b.dataset.tool));
+  $$('.map-toolbar .tool[data-tool]').forEach(b => b.onclick = () => onTool(b.dataset.tool));
+  const toolbar = $('#map-toolbar');
+  toolbar.classList.toggle('collapsed', localStorage.getItem('toolsCollapsed') === '1');
+  $('#tools-toggle').onclick = () => { toolbar.classList.toggle('collapsed'); localStorage.setItem('toolsCollapsed', toolbar.classList.contains('collapsed') ? '1' : '0'); };
+  applyLayerFilter();
   $('#wind-badge').onclick = () => { location.hash = 'wetter'; };
 }
 
 function onTool(tool) {
-  if (tool === 'layer') return showLayerMenu();
+  if (tool === 'layer') return showLayerMenuV2();
   if (tool === 'locate') return locateMe();
   setTool(activeTool === tool ? null : tool);
 }
@@ -232,17 +264,18 @@ function setTool(tool) {
   const hint = $('#map-hint');
   if (drawControl) { map.removeControl(drawControl); drawControl = null; }
   if (tool !== 'messen') $('#measure-box').classList.add('hidden');
-  if (tool !== 'flucht') pendingFlightShot = null;
+  if (tool !== 'flucht') { pendingFlightShot = null; $('#path-box').classList.add('hidden'); pathLayer.clearLayers(); pathPoints = []; }
   // Während des Platzierens kein Doppeltipp-Zoom, damit schnelle Tipps alle als Klick ankommen
   if (tool) map.doubleClickZoom.disable(); else map.doubleClickZoom.enable();
   if (!tool) { hint.classList.add('hidden'); $('#map').style.cursor = ''; return; }
   hint.classList.remove('hidden');
-  if (tool === 'grenze') {
-    hint.textContent = 'Grenze: Polygon zeichnen oder bestehende bearbeiten (Werkzeuge links)';
+  if (tool === 'grenze' || tool === 'gebiet') {
+    const isArea = tool === 'gebiet';
+    hint.textContent = isArea ? 'Gebiet: Fläche zeichnen oder bestehende bearbeiten (Werkzeuge links)' : 'Grenze: Polygon zeichnen oder bestehende bearbeiten (Werkzeuge links)';
     drawControl = new L.Control.Draw({
       position: 'topleft',
-      draw: { polygon: { allowIntersection: false, shapeOptions: { color: '#9b3b2d', weight: 3, fillOpacity: .06 } }, polyline: false, rectangle: false, circle: false, marker: false, circlemarker: false },
-      edit: { featureGroup: boundaryLayer },
+      draw: { polygon: { allowIntersection: false, shapeOptions: isArea ? { color: '#3b7dd8', weight: 2, fillOpacity: .2 } : { color: '#9b3b2d', weight: 3, fillOpacity: .06 } }, polyline: false, rectangle: false, circle: false, marker: false, circlemarker: false },
+      edit: { featureGroup: isArea ? areaLayer : boundaryLayer },
     });
     map.addControl(drawControl);
   } else if (tool === 'faehrte') {
@@ -257,8 +290,9 @@ function setTool(tool) {
     $('#measure-box').classList.remove('hidden');
     renderMeasure();
   } else if (tool === 'flucht') {
-    hint.textContent = 'Tippe auf die Karte in die Richtung, in die das Stück geflüchtet ist';
+    hint.classList.add('hidden');
     $('#map').style.cursor = 'crosshair';
+    $('#path-box').classList.remove('hidden');
   } else if (tool === 'fund') {
     hint.textContent = 'Tippe auf die Karte an den Fundort des Stücks';
     $('#map').style.cursor = 'crosshair';
@@ -268,6 +302,25 @@ function setTool(tool) {
   }
 }
 const PLACEMENT_TOOLS = ['messen', 'faehrte', 'anschuss', 'flucht', 'fund', 'kanzel', 'kamera', 'kirrung'];
+// ---- Ebenen-Menü: Kartenansicht + Filter ----
+function showLayerMenuV2() {
+  if ($('.layer-menu')) return $('.layer-menu').remove();
+  const menu = document.createElement('div'); menu.className = 'layer-menu';
+  const names = { topo: 'Topografisch', osm: 'Straßenkarte', sat: 'Luftbild' };
+  const current = localStorage.getItem('layer') || 'topo';
+  const f = state.layerFilter;
+  const cb = (k, label) => `<label><input type="checkbox" data-filter="${k}" ${f[k] ? 'checked' : ''}>${label}</label>`;
+  menu.innerHTML = `<h4>Karte</h4>${Object.entries(names).map(([k, v]) => `<button data-layer="${k}" class="${k === current ? 'active' : ''}">${v}</button>`).join('')}
+    <h4>Anzeigen</h4>${cb('kanzel', 'Kanzeln')}${cb('kamera', 'Wildkameras')}${cb('kirrung', 'Kirrungen')}${cb('sonstiges', 'Sonstige Punkte')}${cb('labels', 'Beschriftungen')}
+    ${cb('sightings', 'Fährten')}${cb('shots', 'Anschüsse / Nachsuche')}${cb('tracks', 'Nachsuche-Strecken')}${cb('areas', 'Gebiete')}${cb('grenze', 'Reviergrenze')}`;
+  $$('button[data-layer]', menu).forEach(b => b.onclick = () => {
+    Object.values(layers).forEach(l => map.removeLayer(l));
+    layers[b.dataset.layer].addTo(map); localStorage.setItem('layer', b.dataset.layer);
+    $$('button[data-layer]', menu).forEach(x => x.classList.toggle('active', x === b));
+  });
+  $$('input[data-filter]', menu).forEach(c => c.onchange = () => { f[c.dataset.filter] = c.checked; applyLayerFilter(); scheduleRender(renderMapFeatures); });
+  $('.map-wrap').appendChild(menu);
+}
 function markerClickDuringPlacement(latlng) {
   if (!PLACEMENT_TOOLS.includes(activeTool)) return false;
   onMapClick({ latlng: L.latLng(latlng) });
@@ -283,11 +336,7 @@ async function onMapClick(e) {
     try { await api('/shots/' + id, { method: 'PUT', body: { status: 'gefunden', found_lat: e.latlng.lat, found_lng: e.latlng.lng } }); toast('Fundort gespeichert – Waidmannsheil!'); } catch (err) { toast(err.message, 'error'); }
     return;
   }
-  if (activeTool === 'flucht' && pendingFlightShot) {
-    const id = pendingFlightShot; setTool(null);
-    try { await api('/shots/' + id, { method: 'PUT', body: { flight_lat: e.latlng.lat, flight_lng: e.latlng.lng } }); toast('Fluchtrichtung gesetzt'); } catch (err) { toast(err.message, 'error'); }
-    return;
-  }
+  if (activeTool === 'flucht' && pendingFlightShot) { pathPoints.push([e.latlng.lat, e.latlng.lng]); renderPathEdit(); return; }
   const kind = activeTool;
   const f = await api('/features', { body: { kind, lat: e.latlng.lat, lng: e.latlng.lng } });
   setTool(null);
@@ -320,7 +369,7 @@ async function loadRevier() {
   state.revier = await api('/revier');
   $('#revier-name').textContent = state.revier.name;
   document.title = `${state.revier.name} – RevierApp`;
-  renderMapFeatures();
+  scheduleRender(renderMapFeatures);
   renderStandSelect();
   if (state.view === 'mehr') renderSettings();
 }
@@ -339,9 +388,10 @@ function renderMapFeatures() {
   const occupied = new Map(state.checkins.active.filter(c => c.feature_id).map(c => [c.feature_id, c]));
   const planned = new Set(state.plans.filter(p => p.status === 'offen' && p.feature_id).map(p => p.feature_id));
   for (const f of state.revier.features) {
+    if (!state.layerFilter[f.kind]) continue;
     const occ = occupied.get(f.id);
     const m = L.marker([f.lat, f.lng], { icon: markerIcon(f.kind, (occ ? 'occupied ' : '') + (planned.has(f.id) ? 'planned' : '')), draggable: true });
-    m.bindTooltip(f.name, { permanent: true, direction: 'bottom', offset: [0, 2], className: 'marker-label' });
+    m.bindTooltip(f.name, { permanent: !!state.layerFilter.labels, direction: 'bottom', offset: [0, 2], className: 'marker-label' });
     m.on('dragend', async () => { const p = m.getLatLng(); await api('/features/' + f.id, { method: 'PUT', body: { lat: p.lat, lng: p.lng } }); });
     m.on('click', () => { if (markerClickDuringPlacement(m.getLatLng())) return; openFeaturePopup(m, f, occ); });
     featureLayer.addLayer(m);
@@ -354,6 +404,49 @@ function renderMapFeatures() {
     else map.setView([state.revier.center.lat, state.revier.center.lng], state.revier.center.zoom || 6);
   }
   renderCheckinMarkers();
+}
+
+// ---------- Gebiete ----------
+async function loadAreas() { state.areas = await api('/areas'); scheduleRender(renderAreas); }
+function renderAreas() {
+  if (!map) return;
+  areaLayer.clearLayers();
+  for (const a of state.areas) {
+    const l = L.geoJSON(a.geojson, { style: { color: a.color, weight: 2, fillColor: a.color, fillOpacity: .18 } });
+    l.eachLayer(x => {
+      x.areaId = a.id;
+      if (state.layerFilter.labels) x.bindTooltip(a.name, { permanent: true, direction: 'center', className: 'area-label' });
+      x.on('click', ev => {
+        if (markerClickDuringPlacement(ev.latlng)) return;
+        if (activeTool === 'gebiet' || activeTool === 'grenze') return;
+        x.bindPopup(`<h3 style="color:${esc(a.color)}">${esc(a.name)}</h3>${a.notes ? `<div class="muted small">${esc(a.notes)}</div>` : ''}<div class="muted small">Fläche ca. ${fmtArea(x)}</div>
+          <div class="row"><button class="btn sm" data-act="edit">Bearbeiten</button><button class="btn sm" data-act="shape">Form ändern</button><button class="btn sm danger" data-act="del">Löschen</button></div>`).openPopup();
+        const pop = x.getPopup().getElement();
+        $('[data-act="edit"]', pop)?.addEventListener('click', () => { map.closePopup(); areaDialog(a); });
+        $('[data-act="shape"]', pop)?.addEventListener('click', () => { map.closePopup(); setTool('gebiet'); toast('Links „Bearbeiten“ wählen, Eckpunkte ziehen, dann „Save“'); });
+        $('[data-act="del"]', pop)?.addEventListener('click', async () => { if (confirm(`Gebiet „${a.name}“ löschen?`)) { map.closePopup(); await api('/areas/' + a.id, { method: 'DELETE' }); } });
+      });
+      areaLayer.addLayer(x);
+    });
+  }
+}
+function fmtArea(layer) {
+  try { const ll = layer.getLatLngs()[0]; const m2 = L.GeometryUtil?.geodesicArea ? L.GeometryUtil.geodesicArea(ll) : 0; return m2 >= 10000 ? `${(m2 / 10000).toFixed(1)} ha` : `${Math.round(m2)} m²`; } catch { return '–'; }
+}
+const AREA_COLORS = ['#3b7dd8', '#c9a24b', '#6b8e23', '#a0522d', '#8b1a1a', '#5c5c7a', '#2f8f7a', '#b8762b'];
+function areaDialog(a) {
+  const isNew = !a.id;
+  openDialog(`<h2>${isNew ? 'Neues Gebiet' : 'Gebiet bearbeiten'}</h2>
+    <label>Name<input id="a-name" maxlength="80" value="${esc(a.name || '')}" placeholder="z. B. Elsbruch"></label>
+    <label>Farbe</label><div class="signs" id="a-colors">${AREA_COLORS.map(c => `<label style="background:${c};border-color:${c};width:36px;height:36px;padding:0;justify-content:center"><input type="radio" name="a-color" value="${c}" ${(a.color || AREA_COLORS[0]) === c ? 'checked' : ''} style="accent-color:#fff"></label>`).join('')}</div>
+    <label>Notizen<textarea id="a-notes" maxlength="500">${esc(a.notes || '')}</textarea></label>
+    <div class="row"><button class="btn primary" id="a-save">Speichern</button><button class="btn" data-close>Abbrechen</button></div>`, d => {
+    $('#a-save', d).onclick = async () => {
+      const body = { name: $('#a-name', d).value, color: $('input[name=a-color]:checked', d)?.value, notes: $('#a-notes', d).value, geojson: a.geojson };
+      if (!body.name.trim()) return toast('Bitte einen Namen angeben', 'error');
+      try { if (isNew) await api('/areas', { body }); else await api('/areas/' + a.id, { method: 'PUT', body }); closeDialog(); toast('Gebiet gespeichert'); } catch (e) { toast(e.message, 'error'); }
+    };
+  });
 }
 function openFeaturePopup(marker, f, occ) {
   const planned = state.plans.filter(p => p.status === 'offen' && p.feature_id === f.id);
@@ -411,7 +504,7 @@ function renderWindBadge() {
 // ---------- Check-ins ----------
 async function loadCheckins() {
   state.checkins = await api('/checkins');
-  renderActive(); renderHistory(); renderMapFeatures(); renderOnline();
+  renderActive(); renderHistory(); scheduleRender(renderMapFeatures); renderOnline();
 }
 function renderActive() {
   const mine = state.checkins.active.find(c => c.user_id === state.me.id);
@@ -485,7 +578,7 @@ async function doCheckout() {
 // ---------- Angekündigte Ansitze ----------
 async function loadPlans() {
   state.plans = await api('/plans');
-  renderPlans(); renderMapFeatures();
+  renderPlans(); scheduleRender(renderMapFeatures);
   const unread = state.plans.some(p => p.status === 'offen' && p.user_id !== state.me.id && !p.receipts.find(r => r.user_id === state.me.id)?.read_at);
   $('#nav-ansitz-dot').classList.toggle('hidden', !unread);
   if (state.view === 'ansitz') markPlansRead();
@@ -568,7 +661,7 @@ const destPoint = (lat, lng, bearing, meters) => {
   const lo2 = lo + Math.atan2(Math.sin(b) * Math.sin(dr) * Math.cos(la), Math.cos(dr) - Math.sin(la) * Math.sin(la2));
   return [la2 / r, lo2 / r];
 };
-async function loadShots() { state.shots = await api('/shots'); renderShots(); renderShotMarkers(); }
+async function loadShots() { state.shots = await api('/shots'); renderShots(); scheduleRender(renderShotMarkers); }
 function renderShotMarkers() {
   if (!map) return;
   shotLayer.clearLayers();
@@ -579,11 +672,15 @@ function renderShotMarkers() {
     m.on('dragend', async () => { const p = m.getLatLng(); await api('/shots/' + sh.id, { method: 'PUT', body: { lat: p.lat, lng: p.lng } }); });
     m.on('click', () => { if (markerClickDuringPlacement(m.getLatLng())) return; openShotPopup(m, sh); });
     shotLayer.addLayer(m);
-    if (Number.isFinite(sh.flight_bearing)) {
-      const end = sh.flight_lat && sh.flight_lng ? [sh.flight_lat, sh.flight_lng] : destPoint(sh.lat, sh.lng, sh.flight_bearing, 150);
-      shotLayer.addLayer(L.polyline([[sh.lat, sh.lng], end], { color: '#9b3b2d', weight: 3, dashArray: '8 6', interactive: false }));
-      shotLayer.addLayer(L.marker(end, { interactive: false, icon: L.divIcon({ className: '', html: `<div class="flight-arrow" style="transform:rotate(${Math.round(sh.flight_bearing)}deg)"></div>`, iconSize: [18, 18], iconAnchor: [9, 11] }) }));
+    const path = parsePathClient(sh);
+    if (path.length) {
+      const pts = [[sh.lat, sh.lng], ...path];
+      shotLayer.addLayer(L.polyline(pts, { color: '#9b3b2d', weight: 3, dashArray: '8 6', interactive: false }));
+      const a = pts[pts.length - 2], b = pts[pts.length - 1];
+      const rot = bearingDeg(L.latLng(a), L.latLng(b));
+      shotLayer.addLayer(L.marker(b, { interactive: false, icon: L.divIcon({ className: '', html: `<div class="flight-arrow" style="transform:rotate(${Math.round(rot)}deg)"></div>`, iconSize: [18, 18], iconAnchor: [9, 11] }) }));
     }
+    if (sh.track_m > 0 && state.layerFilter.tracks && tracksCache.get(sh.id)?.sum !== sh.track_m) loadTracksFor(sh.id);
     if (sh.found_lat && sh.found_lng) {
       const fm = L.marker([sh.found_lat, sh.found_lng], { interactive: true, icon: L.divIcon({ className: '', html: '<div class="found-marker"></div>', iconSize: [22, 22], iconAnchor: [11, 11] }) });
       fm.bindTooltip(`Fundort ${sh.species}`); shotLayer.addLayer(fm);
@@ -597,7 +694,7 @@ function renderShots() {
   $('#shots-list').innerHTML = state.shots.slice(0, 8).map(sh => `
     <div class="person" data-id="${sh.id}" style="border-left-color:${sh.status === 'gefunden' ? 'var(--ok)' : sh.status === 'abgebrochen' ? '#999' : 'var(--danger)'};cursor:pointer">
       <span class="shot ${sh.status}" style="width:28px;height:28px;border-width:2px"><span class="ico ico-anschuss" style="width:18px;height:18px"></span></span>
-      <div class="who"><b>${esc(sh.species)} <span class="status-tag ${SHOT_STATUS[sh.status][1]}">${SHOT_STATUS[sh.status][0]}</span></b><span>${esc(sh.user_name || '')}${sh.feature_name ? ' · ' + esc(sh.feature_name) : ''}${Number.isFinite(sh.flight_bearing) ? ' · Flucht ' + compass(sh.flight_bearing) : ''}${sh.photo_count ? ' · ' + sh.photo_count + ' Foto' + (sh.photo_count > 1 ? 's' : '') : ''}</span></div>
+      <div class="who"><b>${esc(sh.species)} <span class="status-tag ${SHOT_STATUS[sh.status][1]}">${SHOT_STATUS[sh.status][0]}</span></b><span>${esc(sh.user_name || '')}${sh.feature_name ? ' · ' + esc(sh.feature_name) : ''}${Number.isFinite(sh.flight_bearing) ? ' · Flucht ' + compass(sh.flight_bearing) : ''}${sh.photo_count ? ' · ' + sh.photo_count + ' Foto' + (sh.photo_count > 1 ? 's' : '') : ''}${sh.track_m > 0 ? ' · ' + fmtDist(sh.track_m) + ' gelaufen' : ''}</span></div>
       <div class="since">${ageText(sh.shot_at)}</div></div>`).join('');
   $$('#shots-list [data-id]').forEach(el => el.onclick = () => { const sh = state.shots.find(x => x.id === Number(el.dataset.id)); if (sh && map) { map.setView([sh.lat, sh.lng], Math.max(map.getZoom(), 16)); shotLayer.eachLayer(l => { if (l.getLatLng && l.getLatLng().lat === sh.lat && l.getLatLng().lng === sh.lng && l.options.draggable !== undefined) l.fire('click'); }); } });
 }
@@ -606,13 +703,16 @@ async function openShotPopup(marker, sh) {
   const signs = sh.signs ? sh.signs.split(',').map(x => `<span class="chip">${esc(x.trim())}</span>`).join(' ') : '';
   marker.bindPopup(`<h3>Anschuss ${esc(sh.species)} <span class="status-tag ${SHOT_STATUS[sh.status][1]}">${SHOT_STATUS[sh.status][0]}</span></h3>
     <div>${fmtDT(sh.shot_at)} (${ageText(sh.shot_at)}) · ${esc(sh.user_name || '')}${sh.feature_name ? ' · von ' + esc(sh.feature_name) : ''}</div>
-    <div class="small">${Number.isFinite(sh.flight_bearing) ? `Fluchtrichtung ${Math.round(sh.flight_bearing)}° ${compass(sh.flight_bearing)}` : '<span class="muted">Keine Fluchtrichtung</span>'}</div>
+    <div class="small">${parsePathClient(sh).length ? `Fluchtweg ${parsePathClient(sh).length} Punkt${parsePathClient(sh).length > 1 ? 'e' : ''}, Richtung ${Math.round(sh.flight_bearing)}° ${compass(sh.flight_bearing)}` : '<span class="muted">Kein Fluchtweg eingetragen</span>'}${sh.track_m > 0 ? ` · Nachsuche ${fmtDist(sh.track_m)} gelaufen` : ''}</div>
     ${signs ? `<div class="receipts">${signs}</div>` : ''}${sh.note ? `<div class="muted small">„${esc(sh.note)}“</div>` : ''}
     <div class="photo-grid" id="shot-photos-${sh.id}">${sh.photo_count ? '<span class="muted small">Fotos werden geladen …</span>' : ''}</div>
     <div class="row">
       ${mine && sh.status !== 'gefunden' ? `<button class="btn sm" data-act="status" data-val="${sh.status === 'nachsuche' ? 'gefunden' : 'nachsuche'}">${sh.status === 'nachsuche' ? 'Gefunden' : 'Nachsuche starten'}</button>` : ''}
-      ${mine ? `<button class="btn sm" data-act="flucht">Richtung setzen</button><button class="btn sm" data-act="edit">Bearbeiten</button><button class="btn sm danger" data-act="del">Löschen</button>` : ''}
+      ${sh.status !== 'gefunden' && sh.status !== 'abgebrochen' ? `<button class="btn sm" data-act="track">${track?.shotId === sh.id ? 'Aufzeichnung läuft' : 'Nachsuche aufzeichnen'}</button>` : ''}
+      ${mine ? `<button class="btn sm" data-act="flucht">${parsePathClient(sh).length ? 'Fluchtweg bearbeiten' : 'Fluchtweg setzen'}</button><button class="btn sm" data-act="edit">Bearbeiten</button><button class="btn sm danger" data-act="del">Löschen</button>` : ''}
     </div>`, { maxWidth: 320 }).openPopup();
+  if (sh.track_m > 0) loadTracksFor(sh.id);
+  $('[data-act="track"]', marker.getPopup().getElement())?.addEventListener('click', () => { map.closePopup(); if (track?.shotId !== sh.id) startTrack(sh); });
   const pop = marker.getPopup().getElement();
   $('[data-act="status"]', pop)?.addEventListener('click', async () => {
     const val = $('[data-act="status"]', pop).dataset.val; map.closePopup();
@@ -622,7 +722,7 @@ async function openShotPopup(marker, sh) {
       } else await api('/shots/' + sh.id, { method: 'PUT', body: { status: val } });
     } catch (e) { toast(e.message, 'error'); }
   });
-  $('[data-act="flucht"]', pop)?.addEventListener('click', () => { map.closePopup(); pendingFlightShot = sh.id; setTool('flucht'); });
+  $('[data-act="flucht"]', pop)?.addEventListener('click', () => { map.closePopup(); startPathEdit(sh); });
   $('[data-act="edit"]', pop)?.addEventListener('click', () => { map.closePopup(); shotDialog(sh); });
   $('[data-act="del"]', pop)?.addEventListener('click', async () => { if (confirm('Anschuss-Markierung löschen?')) { map.closePopup(); await api('/shots/' + sh.id, { method: 'DELETE' }); } });
   if (sh.photo_count) {
@@ -636,6 +736,91 @@ async function openShotPopup(marker, sh) {
   }
 }
 let pendingFound = null;
+// Fluchtweg: gespeicherte Punktliste oder (ältere Daten) eine einzelne Richtung
+function parsePathClient(sh) {
+  try { const p = sh.flight_path ? JSON.parse(sh.flight_path) : null; if (Array.isArray(p) && p.length) return p; } catch {}
+  if (sh.flight_lat && sh.flight_lng) return [[sh.flight_lat, sh.flight_lng]];
+  if (Number.isFinite(sh.flight_bearing)) return [destPoint(sh.lat, sh.lng, sh.flight_bearing, 150)];
+  return [];
+}
+let pathPoints = [];
+function startPathEdit(sh) {
+  pendingFlightShot = sh.id; pathPoints = parsePathClient(sh).map(p => [p[0], p[1]]);
+  setTool('flucht'); renderPathEdit();
+}
+function renderPathEdit() {
+  pathLayer.clearLayers();
+  const sh = state.shots.find(x => x.id === pendingFlightShot); if (!sh) return;
+  const pts = [[sh.lat, sh.lng], ...pathPoints];
+  pathLayer.addLayer(L.polyline(pts, { color: '#9b3b2d', weight: 4, dashArray: '8 6', interactive: false }));
+  pathPoints.forEach((pt, i) => {
+    const v = L.marker(pt, { draggable: true, zIndexOffset: 1200, icon: L.divIcon({ className: '', html: '<div class="path-vertex"></div>', iconSize: [14, 14], iconAnchor: [7, 7] }) });
+    v.on('drag', () => { const ll = v.getLatLng(); pathPoints[i] = [ll.lat, ll.lng]; const line = pathLayer.getLayers().find(l => l instanceof L.Polyline); line?.setLatLngs([[sh.lat, sh.lng], ...pathPoints]); });
+    v.on('dragend', () => renderPathEdit());
+    pathLayer.addLayer(v);
+  });
+  let total = 0; for (let i = 1; i < pts.length; i++) total += L.latLng(pts[i - 1]).distanceTo(L.latLng(pts[i]));
+  $('#path-title').textContent = `Fluchtweg ${sh.species}`;
+  $('#path-info').textContent = pathPoints.length ? `${pathPoints.length} Punkt${pathPoints.length > 1 ? 'e' : ''} · ${fmtDist(total)} · Punkte ziehen oder weitere antippen` : 'Punkte in Fluchtrichtung antippen';
+}
+$('#path-undo').onclick = () => { pathPoints.pop(); renderPathEdit(); };
+$('#path-clear').onclick = () => { pathPoints = []; renderPathEdit(); };
+$('#path-cancel').onclick = () => setTool(null);
+$('#path-save').onclick = async () => {
+  const id = pendingFlightShot, pts = pathPoints.slice(); setTool(null);
+  try { await api('/shots/' + id, { method: 'PUT', body: { flight_path: pts } }); toast(pts.length ? 'Fluchtweg gespeichert' : 'Fluchtweg entfernt'); } catch (e) { toast(e.message, 'error'); }
+};
+
+// ---------- Nachsuche-Strecke aufzeichnen (GPS) ----------
+let track = null; // { shotId, trackId, points, watchId, startedAt, lastSave }
+const tracksCache = new Map();
+async function loadTracksFor(shotId) {
+  try {
+    const list = await api(`/shots/${shotId}/tracks`);
+    tracksCache.set(shotId, { list, sum: list.reduce((a, t) => a + t.distance_m, 0) });
+    trackLayer.eachLayer(l => { if (l.shotId === shotId) trackLayer.removeLayer(l); });
+    for (const t of list) {
+      if (t.points.length < 2) continue;
+      const pl = L.polyline(t.points, { color: '#2a7a3b', weight: 4, opacity: .85 });
+      pl.shotId = shotId; pl.bindTooltip(`Nachsuche ${esc(t.user_name || '')}: ${fmtDist(t.distance_m)}`);
+      trackLayer.addLayer(pl);
+    }
+  } catch {}
+}
+async function startTrack(sh) {
+  if (track) return toast('Es läuft bereits eine Aufzeichnung', 'error');
+  if (!navigator.geolocation) return toast('GPS nicht verfügbar', 'error');
+  try {
+    const r = await api(`/shots/${sh.id}/tracks`, { body: { points: [] }, silent: true });
+    track = { shotId: sh.id, trackId: r.id, points: [], startedAt: Date.now(), lastSave: 0, dist: 0, line: null };
+    track.watchId = navigator.geolocation.watchPosition(onTrackPosition, err => toast('GPS-Fehler: ' + err.message, 'error'), { enableHighAccuracy: true, maximumAge: 2000, timeout: 15000 });
+    $('#track-box').classList.remove('hidden'); $('#track-info').textContent = `Nachsuche ${sh.species} – Bildschirm anlassen`;
+    toast('Aufzeichnung gestartet');
+  } catch (e) { toast(e.message, 'error'); }
+}
+function onTrackPosition(pos) {
+  if (!track) return;
+  const { latitude: lat, longitude: lng, accuracy } = pos.coords;
+  if (accuracy > 40) return; // ungenaue Positionen verwerfen
+  const last = track.points[track.points.length - 1];
+  if (last) { const d = L.latLng(last).distanceTo([lat, lng]); if (d < 4) return; track.dist += d; }
+  track.points.push([lat, lng]);
+  if (!track.line) { track.line = L.polyline(track.points, { color: '#2a7a3b', weight: 4 }); track.line.shotId = track.shotId; trackLayer.addLayer(track.line); } else track.line.setLatLngs(track.points);
+  const mins = Math.round((Date.now() - track.startedAt) / 60000);
+  $('#track-dist').textContent = fmtDist(track.dist); $('#track-info').textContent = `${mins} Min. · ${track.points.length} Punkte · Bildschirm anlassen`;
+  if (Date.now() - track.lastSave > 20000) saveTrack(false);
+}
+async function saveTrack(ended) {
+  if (!track) return; track.lastSave = Date.now();
+  try { await api(`/shots/${track.shotId}/tracks/${track.trackId}`, { method: 'PUT', body: { points: track.points, ended }, silent: !ended }); } catch (e) { console.warn('Track speichern', e.message); }
+}
+$('#track-stop').onclick = async () => {
+  if (!track) return;
+  navigator.geolocation.clearWatch(track.watchId);
+  await saveTrack(true);
+  toast(`Aufzeichnung beendet: ${fmtDist(track.dist)}`);
+  const sid = track.shotId; track = null; $('#track-box').classList.add('hidden'); loadTracksFor(sid);
+};
 // Foto verkleinern, damit es als Daten-URL in die Datenbank passt (max. 1280 px, JPEG)
 function compressImage(file) {
   return new Promise((resolve, reject) => {
@@ -663,13 +848,13 @@ function shotDialog(sh) {
     <label>Wildart<input id="sh-species" list="species-list" maxlength="60" value="${esc(sh.species || '')}" placeholder="z. B. Schwarzwild, Rehwild (Bock)"><datalist id="species-list">${SPECIES.map(x => `<option value="${x}">`).join('')}</datalist></label>
     <label>Zeitpunkt des Schusses<input type="datetime-local" id="sh-time" value="${toLocalInput(when)}"></label>
     <label>Von welcher Kanzel<select id="sh-stand"><option value="">– keine / Pirsch –</option>${stands.map(f => `<option value="${f.id}" ${(sh.feature_id ?? mine?.feature_id) === f.id ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}</select></label>
-    <label>Fluchtrichtung<select id="sh-dir"><option value="">– unbekannt / später auf Karte setzen –</option>${dirs.map((d, i) => `<option value="${i * 22.5}" ${d === curDir ? 'selected' : ''}>${d} (${i * 22.5}°)</option>`).join('')}</select></label>
+    <label>Fluchtrichtung (grob; den genauen Fluchtweg setzt du danach auf der Karte)<select id="sh-dir"><option value="">– unbekannt / später auf Karte setzen –</option>${dirs.map((d, i) => `<option value="${i * 22.5}" ${d === curDir ? 'selected' : ''}>${d} (${i * 22.5}°)</option>`).join('')}</select></label>
     <label>Pirschzeichen am Anschuss</label><div class="signs">${SHOT_SIGNS.map(x => `<label><input type="checkbox" value="${x}" ${chosen.has(x) ? 'checked' : ''}>${x}</label>`).join('')}</div>
     <label>Notiz<textarea id="sh-note" maxlength="1000" placeholder="Schusszeichen, Verhalten des Stücks, Entfernung, Trefferlage …">${esc(sh.note || '')}</textarea></label>
     <label>Fotos vom Anschuss<input type="file" id="sh-photos" accept="image/*" capture="environment" multiple></label>
     <div class="photo-grid" id="sh-preview"></div>
     <div class="row"><button class="btn primary" id="sh-save">${isNew ? 'Anschuss melden' : 'Speichern'}</button><button class="btn" data-close>Abbrechen</button></div>
-    ${isNew ? '<p class="muted small">Alle Nutzer erhalten eine Push-Nachricht. Danach kannst du über die Markierung „Richtung setzen“ die Fluchtrichtung direkt auf der Karte antippen und den Stand der Nachsuche melden.</p>' : ''}`, d => {
+    ${isNew ? '<p class="muted small">Alle Nutzer erhalten eine Push-Nachricht. Direkt danach tippst du den Fluchtweg Punkt für Punkt auf der Karte an. Über die Markierung lässt sich der Weg später bearbeiten, die Nachsuche aufzeichnen und der Stand melden.</p>' : ''}`, d => {
     $('#sh-photos', d).onchange = async () => {
       for (const f of [...$('#sh-photos', d).files].slice(0, 5 - photos.length)) { try { photos.push(await compressImage(f)); } catch (e) { toast(e.message, 'error'); } }
       $('#sh-preview', d).innerHTML = photos.map((p, i) => `<span class="ph"><img src="${p}" alt=""><button data-i="${i}">✕</button></span>`).join('');
@@ -682,7 +867,7 @@ function shotDialog(sh) {
       if (!body.species.trim()) return toast('Bitte Wildart angeben', 'error');
       $('#sh-save', d).disabled = true;
       try {
-        if (isNew) { await api('/shots', { body }); toast('Anschuss gemeldet – Waidmannsheil und gute Nachsuche'); }
+        if (isNew) { const created = await api('/shots', { body }); toast('Anschuss gemeldet – jetzt den Fluchtweg auf der Karte setzen'); closeDialog(); await loadShots(); startPathEdit(state.shots.find(x => x.id === created.id) || created); return; }
         else { await api('/shots/' + sh.id, { method: 'PUT', body }); toast('Gespeichert'); }
         closeDialog();
       } catch (e) { toast(e.message, 'error'); $('#sh-save', d).disabled = false; }
@@ -701,7 +886,7 @@ function ageText(iso) {
 }
 async function loadSightings() {
   state.sightings = await api('/sightings');
-  renderSightings(); renderSightingMarkers();
+  renderSightings(); scheduleRender(renderSightingMarkers);
 }
 function renderSightingMarkers() {
   if (!map) return;
@@ -847,44 +1032,89 @@ function renderWeather() {
 // ---------- Drückjagd ----------
 const ROLE_NAMES = { jagdleiter: 'Jagdleiter', schuetze: 'Schütze', treiber: 'Treiber', hundefuehrer: 'Hundeführer', ansteller: 'Ansteller', helfer: 'Helfer' };
 const HUNT_STATUS = { planung: ['In Planung', 'warn'], bestaetigt: ['Bestätigt', 'ok'], abgeschlossen: ['Abgeschlossen', ''], abgesagt: ['Abgesagt', 'danger'] };
+const HUNT_TYPES = { drueckjagd: 'Drückjagd', ansitz: 'Gemeinschaftsansitz', buschieren: 'Buschieren', vogeljagd: 'Vogeljagd / Entenstrich', frettieren: 'Frettieren', fallenjagd: 'Fallenjagd', revierarbeit: 'Revierarbeit', sonstiges: 'Sonstiges' };
+const EVENT_STATUS = { zusage: ['Zusage', 'ok'], vielleicht: ['Vielleicht', 'warn'], absage: ['Absage', 'danger'], offen: ['Offen', ''] };
 async function loadHunts() { state.hunts = await api('/hunts'); if (state.view === 'jagd' && !state.hunt) renderHunts(); }
+async function loadEvents() { state.events = await api('/events'); if (state.view === 'jagd' && !state.hunt) renderHunts(); }
+function renderEvents() {
+  const today = new Date().toISOString().slice(0, 10);
+  const list = state.events.filter(e => e.date >= today);
+  return `<div class="row" style="justify-content:space-between;margin:1.2rem 0 .8rem"><h2 style="margin:0">Termine</h2><button class="btn" id="btn-new-event">+ Termin</button></div>
+    ${list.length ? list.map(e => { const d = new Date(e.date); const mine = e.responses.find(r => r.user_id === state.me.id); const yes = e.responses.filter(r => r.status === 'zusage'); return `
+      <div class="event" id="termin-${e.id}" data-id="${e.id}">
+        <div class="date-box"><b>${d.getDate()}</b><span>${d.toLocaleDateString('de-DE', { month: 'short' })}</span></div>
+        <div><div class="row" style="justify-content:space-between"><h3>${esc(e.title)}</h3><button class="btn sm" data-edit-event="${e.id}">Bearbeiten</button></div>
+          <div class="muted small">${d.toLocaleDateString('de-DE', { weekday: 'long' })}${e.time ? ' · ' + esc(e.time) + ' Uhr' : ''}${e.place ? ' · ' + esc(e.place) : ''}</div>
+          ${e.description ? `<div class="small" style="white-space:pre-wrap;margin-top:.3rem">${esc(e.description)}</div>` : ''}
+          <div class="resp">${['zusage', 'vielleicht', 'absage'].map(k => `<button class="btn sm ${mine?.status === k ? 'active' : ''}" data-resp="${k}">${EVENT_STATUS[k][0]}</button>`).join('')}</div>
+          <div class="inline-form" style="margin-top:.4rem"><label>Ich bringe mit<input data-brings maxlength="200" value="${esc(mine?.brings || '')}" placeholder="z. B. Beamer, Kuchen"></label><button class="btn sm" data-brings-save>OK</button></div>
+          <div class="receipts" style="margin-top:.5rem">${e.responses.length ? e.responses.map(r => `<span class="chip ${r.status === 'zusage' ? 'confirmed' : r.status === 'vielleicht' ? 'read' : ''}">${r.status === 'zusage' ? '✓' : r.status === 'absage' ? '✕' : '?'} ${esc(r.user_name)}${r.brings ? ' – ' + esc(r.brings) : ''}</span>`).join('') : '<span class="muted small">Noch keine Rückmeldungen</span>'}</div>
+          <div class="muted small" style="margin-top:.3rem">${yes.length} Zusage${yes.length === 1 ? '' : 'n'}</div>
+        </div></div>`; }).join('') : '<div class="card"><p class="muted small">Keine anstehenden Termine. Trage Hegeringsitzung, Trophäenschau oder Revierversammlung ein – alle werden benachrichtigt.</p></div>'}`;
+}
+function bindEvents(root) {
+  $('#btn-new-event', root)?.addEventListener('click', () => eventDialog());
+  $$('[data-edit-event]', root).forEach(b => b.onclick = () => eventDialog(state.events.find(e => e.id === Number(b.dataset.editEvent))));
+  $$('.event [data-resp]', root).forEach(b => b.onclick = async () => { const id = Number(b.closest('.event').dataset.id); try { await api(`/events/${id}/respond`, { body: { status: b.dataset.resp } }); } catch (e) { toast(e.message, 'error'); } });
+  $$('.event [data-brings-save]', root).forEach(b => b.onclick = async () => { const el = b.closest('.event'); try { await api(`/events/${el.dataset.id}/respond`, { body: { brings: $('[data-brings]', el).value } }); toast('Gespeichert'); } catch (e) { toast(e.message, 'error'); } });
+}
+function eventDialog(e = null) {
+  openDialog(`<h2>${e ? 'Termin bearbeiten' : 'Neuer Termin'}</h2>
+    <label>Titel<input id="ev-title" maxlength="120" value="${esc(e?.title || '')}" placeholder="z. B. Hegeringsitzung, Trophäenschau"></label>
+    <label>Datum<input id="ev-date" type="date" value="${esc(e?.date || '')}"></label>
+    <label>Uhrzeit<input id="ev-time" type="time" value="${esc(e?.time || '')}"></label>
+    <label>Ort<input id="ev-place" maxlength="200" value="${esc(e?.place || '')}"></label>
+    <label>Beschreibung<textarea id="ev-desc" maxlength="4000" placeholder="Tagesordnung, Hinweise, was mitzubringen ist …">${esc(e?.description || '')}</textarea></label>
+    <div class="row"><button class="btn primary" id="ev-save">Speichern</button>${e ? '<button class="btn danger" id="ev-del">Löschen</button>' : ''}<button class="btn" data-close>Abbrechen</button></div>`, d => {
+    $('#ev-save', d).onclick = async () => {
+      const body = { title: $('#ev-title', d).value, date: $('#ev-date', d).value, time: $('#ev-time', d).value, place: $('#ev-place', d).value, description: $('#ev-desc', d).value };
+      try { if (e) await api('/events/' + e.id, { method: 'PUT', body }); else await api('/events', { body }); closeDialog(); } catch (err) { toast(err.message, 'error'); }
+    };
+    $('#ev-del', d)?.addEventListener('click', async () => { if (confirm('Termin löschen?')) { await api('/events/' + e.id, { method: 'DELETE' }); closeDialog(); } });
+  });
+}
 async function loadHunt(id) { try { state.hunt = await api('/hunts/' + id); renderHuntDetail(); } catch { state.hunt = null; renderHunts(); } }
 function renderHunts() {
   $('#hunts-content').innerHTML = `
-    <div class="row" style="justify-content:space-between;margin-bottom:.8rem"><h2 style="margin:0">Drückjagden</h2><button class="btn primary" id="btn-new-hunt">+ Neue Drückjagd</button></div>
+    <div class="row" style="justify-content:space-between;margin-bottom:.8rem"><h2 style="margin:0">Jagden</h2><button class="btn primary" id="btn-new-hunt">+ Neue Jagd</button></div>
     <div class="hunt-list">${state.hunts.length ? state.hunts.map(h => { const d = new Date(h.date); const [s, cls] = HUNT_STATUS[h.status]; return `
       <div class="hunt" data-id="${h.id}">
         <div class="date-box"><b>${d.getDate()}</b><span>${d.toLocaleDateString('de-DE', { month: 'short' })} ${d.getFullYear()}</span></div>
-        <div><h3>${esc(h.title)}</h3><div class="muted small">${h.leader ? 'Jagdleitung: ' + esc(h.leader) + ' · ' : ''}${h.participant_count} Teilnehmer${h.meet_time ? ' · Treffen ' + esc(h.meet_time) : ''}</div></div>
-        <span class="status-tag ${cls}">${s}</span></div>`; }).join('') : '<div class="card"><p class="muted">Noch keine Drückjagd geplant. Lege die erste an – alle Nutzer werden benachrichtigt.</p></div>'}</div>`;
+        <div><h3>${esc(h.title)} <span class="hunt-type">${HUNT_TYPES[h.type] || 'Jagd'}</span></h3><div class="muted small">${h.leader ? 'Leitung: ' + esc(h.leader) + ' · ' : ''}${h.participant_count} Teilnehmer${h.meet_time ? ' · Treffen ' + esc(h.meet_time) : ''}</div></div>
+        <span class="status-tag ${cls}">${s}</span></div>`; }).join('') : '<div class="card"><p class="muted">Noch keine Jagd geplant. Drückjagd, Gemeinschaftsansitz, Buschieren, Vogeljagd, Frettieren oder Revierarbeit anlegen – alle Nutzer werden benachrichtigt.</p></div>'}</div>
+    ${renderEvents()}`;
   $('#btn-new-hunt').onclick = () => editHuntDialog();
   $$('.hunt', $('#hunts-content')).forEach(el => el.onclick = () => { location.hash = 'jagd-' + el.dataset.id; });
+  bindEvents($('#hunts-content'));
 }
 function editHuntDialog(h = null) {
-  openDialog(`<h2>${h ? 'Drückjagd bearbeiten' : 'Neue Drückjagd'}</h2>
-    <label>Titel<input id="h-title" value="${esc(h?.title || '')}" placeholder="z. B. Herbstdrückjagd Nordrevier" maxlength="120"></label>
+  openDialog(`<h2>${h ? 'Jagd bearbeiten' : 'Neue Jagd planen'}</h2>
+    <label>Jagdart<select id="h-type">${Object.entries(HUNT_TYPES).map(([k, v]) => `<option value="${k}" ${k === (h?.type || 'drueckjagd') ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+    <label>Titel<input id="h-title" value="${esc(h?.title || '')}" placeholder="z. B. Herbstdrückjagd Nordrevier, Entenstrich am Teich" maxlength="120"></label>
     <label>Datum<input id="h-date" type="date" value="${esc(h?.date || '')}"></label>
     <label>Treffpunkt-Zeit<input id="h-time" type="time" value="${esc(h?.meet_time || '08:00')}"></label>
     <label>Treffpunkt<input id="h-point" value="${esc(h?.meet_point || '')}" placeholder="z. B. Parkplatz Forsthaus" maxlength="200"></label>
-    <label>Jagdleitung<input id="h-leader" value="${esc(h?.leader || '')}" maxlength="80"></label>
+    <label>Leitung / Organisation<input id="h-leader" value="${esc(h?.leader || '')}" maxlength="80"></label>
     ${h ? `<label>Status<select id="h-status">${Object.entries(HUNT_STATUS).map(([k, [v]]) => `<option value="${k}" ${k === h.status ? 'selected' : ''}>${v}</option>`).join('')}</select></label>` : ''}
     <label>Beschreibung / Belehrung<textarea id="h-desc" maxlength="4000" placeholder="Freigabe, Sicherheitshinweise, Signale, Ablauf …">${esc(h?.description || '')}</textarea></label>
     <div class="row"><button class="btn primary" id="h-save">Speichern</button>${h ? '<button class="btn danger" id="h-del">Löschen</button>' : ''}<button class="btn" data-close>Abbrechen</button></div>`, d => {
     $('#h-save', d).onclick = async () => {
-      const body = { title: $('#h-title', d).value, date: $('#h-date', d).value, meet_time: $('#h-time', d).value, meet_point: $('#h-point', d).value, leader: $('#h-leader', d).value, description: $('#h-desc', d).value, status: $('#h-status', d)?.value };
+      const body = { type: $('#h-type', d).value, title: $('#h-title', d).value, date: $('#h-date', d).value, meet_time: $('#h-time', d).value, meet_point: $('#h-point', d).value, leader: $('#h-leader', d).value, description: $('#h-desc', d).value, status: $('#h-status', d)?.value };
       try {
         const r = h ? await api('/hunts/' + h.id, { method: 'PUT', body }) : await api('/hunts', { body });
         closeDialog(); location.hash = 'jagd-' + r.id; state.hunt = r; renderHuntDetail();
       } catch (e) { toast(e.message, 'error'); }
     };
-    $('#h-del', d)?.addEventListener('click', async () => { if (confirm('Drückjagd wirklich löschen?')) { await api('/hunts/' + h.id, { method: 'DELETE' }); closeDialog(); state.hunt = null; location.hash = 'jagd'; renderHunts(); } });
+    $('#h-del', d)?.addEventListener('click', async () => { if (confirm('Jagd wirklich löschen?')) { await api('/hunts/' + h.id, { method: 'DELETE' }); closeDialog(); state.hunt = null; location.hash = 'jagd'; renderHunts(); } });
   });
 }
 function renderHuntDetail() {
   const h = state.hunt; if (!h) return renderHunts();
   const [s, cls] = HUNT_STATUS[h.status];
   const stands = state.revier.features.filter(f => f.kind === 'kanzel');
-  const tabs = { uebersicht: 'Übersicht', teilnehmer: `Teilnehmer (${h.participants.length})`, treiben: `Treiben (${h.drives.length})`, checkliste: `Checkliste (${h.tasks.filter(t => t.done).length}/${h.tasks.length})`, strecke: `Strecke (${h.bag.reduce((a, b) => a + b.count, 0)})` };
+  const isDrive = h.type === 'drueckjagd' || !h.type;
+  const tabs = { uebersicht: 'Übersicht', teilnehmer: `Teilnehmer (${h.participants.length})`, ...(isDrive ? { treiben: `Treiben (${h.drives.length})` } : {}), material: `Material (${h.items.length})`, checkliste: `Checkliste (${h.tasks.filter(t => t.done).length}/${h.tasks.length})`, strecke: `Strecke (${h.bag.reduce((a, b) => a + b.count, 0)})` };
+  if (!tabs[state.huntTab]) state.huntTab = 'uebersicht';
   const byRole = r => h.participants.filter(p => p.role === r).length;
   let body = '';
   if (state.huntTab === 'uebersicht') body = `<div class="card">
@@ -926,6 +1156,12 @@ function renderHuntDetail() {
       <div class="inline-form"><label>Neues Treiben<input id="d-name" placeholder="z. B. Treiben 1 – Buchenhang" maxlength="80"></label><label>Von<input id="d-start" type="time" value="09:00"></label><label>Bis<input id="d-end" type="time" value="11:00"></label><button class="btn primary" id="d-add">Anlegen</button></div>
     </div>`;
 
+  if (state.huntTab === 'material') body = `<div class="card">
+      <p class="muted small">Was wird gebraucht und wer bringt es mit? Trage dich bei freien Positionen ein.</p>
+      ${h.items.length ? h.items.map(it => `<div class="task ${it.done ? 'done' : ''}" data-iid="${it.id}"><input type="checkbox" ${it.done ? 'checked' : ''} title="Erledigt / eingepackt"><span><b>${esc(it.text)}</b> ${it.person ? `<em class="muted small">– bringt ${esc(it.person)}</em>` : `<button class="btn sm" data-take="${it.id}">Ich bringe das mit</button>`}</span><button class="btn sm" data-del-item="${it.id}">✕</button></div>`).join('') : '<p class="muted">Noch nichts eingetragen.</p>'}
+      <div class="inline-form"><label>Material<input id="i-text" placeholder="z. B. Wildwanne, Funkgeräte, Kaffee" maxlength="200"></label><label>Bringt mit<input id="i-who" placeholder="optional" maxlength="80" value=""></label><button class="btn primary" id="i-add">Hinzufügen</button></div>
+    </div>`;
+
   if (state.huntTab === 'checkliste') body = `<div class="card">
       ${h.tasks.map(t => `<div class="task ${t.done ? 'done' : ''}" data-tid="${t.id}"><input type="checkbox" ${t.done ? 'checked' : ''}><span>${esc(t.text)}${t.assignee ? ` <em class="muted small">– ${esc(t.assignee)}</em>` : ''}</span><button class="btn sm" data-del-task="${t.id}">✕</button></div>`).join('')}
       <div class="inline-form"><label>Neue Aufgabe<input id="t-text" placeholder="Was ist zu erledigen?" maxlength="200"></label><label>Zuständig<input id="t-who" placeholder="optional" maxlength="80"></label><button class="btn primary" id="t-add">Hinzufügen</button></div>
@@ -938,8 +1174,8 @@ function renderHuntDetail() {
     </div>`;
 
   $('#hunts-content').innerHTML = `
-    <button class="back" id="btn-back">← Alle Drückjagden</button>
-    <div class="row" style="justify-content:space-between;align-items:flex-start"><div><h2 style="margin:0">${esc(h.title)}</h2><div class="muted">${fmtDate(h.date)} · <span class="status-tag ${cls}">${s}</span></div></div><button class="btn sm" id="btn-edit-hunt">Bearbeiten</button></div>
+    <button class="back" id="btn-back">← Alle Jagden und Termine</button>
+    <div class="row" style="justify-content:space-between;align-items:flex-start"><div><h2 style="margin:0">${esc(h.title)}</h2><div class="muted"><span class="hunt-type">${HUNT_TYPES[h.type] || 'Jagd'}</span> ${fmtDate(h.date)} · <span class="status-tag ${cls}">${s}</span></div></div><button class="btn sm" id="btn-edit-hunt">Bearbeiten</button></div>
     <div class="tabs">${Object.entries(tabs).map(([k, v]) => `<button data-tab="${k}" class="${k === state.huntTab ? 'active' : ''}">${v}</button>`).join('')}</div>
     ${body}`;
   const root = $('#hunts-content');
@@ -966,8 +1202,13 @@ function renderHuntDetail() {
       $('#e-save', dlg).onclick = () => { closeDialog(); act(() => api(`${H}/drives/${d.id}`, { method: 'PUT', body: { name: $('#e-name', dlg).value, start_time: $('#e-start', dlg).value, end_time: $('#e-end', dlg).value, notes: $('#e-notes', dlg).value } })); };
     });
   });
+  // Material
+  $$('.task[data-iid] input[type=checkbox]', root).forEach(c => c.onchange = () => act(() => api(`${H}/items/${c.closest('.task').dataset.iid}`, { method: 'PUT', body: { done: c.checked } })));
+  $$('[data-take]', root).forEach(b => b.onclick = () => act(() => api(`${H}/items/${b.dataset.take}`, { method: 'PUT', body: { person: state.me.name } })));
+  $$('[data-del-item]', root).forEach(b => b.onclick = () => act(() => api(`${H}/items/${b.dataset.delItem}`, { method: 'DELETE' })));
+  $('#i-add', root)?.addEventListener('click', () => act(() => api(`${H}/items`, { body: { text: $('#i-text').value, person: $('#i-who').value } })));
   // Checkliste
-  $$('.task input[type=checkbox]', root).forEach(c => c.onchange = () => act(() => api(`${H}/tasks/${c.closest('.task').dataset.tid}`, { method: 'PUT', body: { done: c.checked } })));
+  $$('.task[data-tid] input[type=checkbox]', root).forEach(c => c.onchange = () => act(() => api(`${H}/tasks/${c.closest('.task').dataset.tid}`, { method: 'PUT', body: { done: c.checked } })));
   $$('[data-del-task]', root).forEach(b => b.onclick = () => act(() => api(`${H}/tasks/${b.dataset.delTask}`, { method: 'DELETE' })));
   $('#t-add', root)?.addEventListener('click', () => act(() => api(`${H}/tasks`, { body: { text: $('#t-text').value, assignee: $('#t-who').value } })));
   // Strecke

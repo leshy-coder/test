@@ -9,6 +9,7 @@ function getHandler() {
 }
 
 export default async (req, context) => {
+  globalThis.__waitUntil = p => { try { context.waitUntil?.(p); } catch {} };
   const url = new URL(req.url);
   const headers = Object.fromEntries(req.headers);
   const body = ['GET', 'HEAD'].includes(req.method) ? null : await req.text();
