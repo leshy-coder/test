@@ -248,6 +248,68 @@ test('Termine mit Zu-/Absage und Mitbringliste', async () => {
   assert.equal((await call('/events', { token: hans.token })).data.length, 0);
 });
 
+test('Jagdzeiten, Streckenbuch und Abschussplan', async () => {
+  const se = (await call('/seasons', { token: grete.token })).data;
+  assert.ok(se.seasons.length > 10); assert.ok(se.seasons.some(x => x.species.startsWith('Rehwild')));
+  assert.equal((await call('/seasons', { token: grete.token, method: 'PUT', body: { seasons: [] } })).status, 403, 'nur Admin');
+  await call('/seasons', { token: hans.token, method: 'PUT', body: { seasons: [{ species: 'Rehwild – Bock', from: '05-01', to: '10-15' }, { species: 'Kaputt', from: 'xx', to: '' }], note: 'Thüringen' } });
+  const se2 = (await call('/seasons', { token: grete.token })).data;
+  assert.equal(se2.seasons.length, 2); assert.equal(se2.seasons[1].from, '', 'ungültiges Datum verworfen'); assert.equal(se2.note, 'Thüringen');
+  const hv0 = (await call('/harvest', { token: hans.token })).data;
+  assert.match(hv0.season, /^\d{4}\/\d{2}$/);
+  const d = `${hv0.from.slice(0, 4)}-06-15`;
+  await call('/harvest', { token: hans.token, body: { species: 'Rehwild – Bock', count: 1, date: d, weight_kg: 18, notes: 'Jährling' } });
+  await call('/harvest', { token: grete.token, body: { species: 'Rehwild – Bock', count: 2, date: d } });
+  assert.equal((await call('/quota', { token: grete.token, method: 'PUT', body: { season: hv0.season, quota: [] } })).status, 403);
+  await call('/quota', { token: hans.token, method: 'PUT', body: { season: hv0.season, quota: [{ species: 'Rehwild – Bock', target: 6 }] } });
+  const hv = (await call(`/harvest?season=${encodeURIComponent(hv0.season)}`, { token: grete.token })).data;
+  assert.equal(hv.entries.length, 2); assert.equal(hv.entries.reduce((a, e) => a + e.count, 0), 3); assert.equal(hv.quota[0].target, 6);
+  const mine = hv.entries.find(e => e.user_id === hans.user.id);
+  assert.equal((await call('/harvest/' + mine.id, { token: grete.token, method: 'DELETE' })).status, 403, 'fremder Eintrag');
+  assert.equal((await call('/harvest/' + mine.id, { token: hans.token, method: 'DELETE' })).status, 200);
+});
+
+test('Protokoll je Kirrung, Windrichtungen, Revierarbeiten', async () => {
+  const k = (await call('/features', { token: hans.token, body: { kind: 'kirrung', name: 'Kirrung Süd', lat: 50.94, lng: 10.19 } })).data;
+  const upd = (await call('/features/' + k.id, { token: hans.token, method: 'PUT', body: { interval_days: 5 } })).data;
+  assert.equal(upd.interval_days, 5);
+  await call(`/features/${k.id}/logs`, { token: grete.token, body: { kind: 'beschickt', note: 'Mais' } });
+  const logs = (await call(`/features/${k.id}/logs`, { token: hans.token })).data;
+  assert.equal(logs.length, 1); assert.equal(logs[0].user_name, 'Grete');
+  const rev = (await call('/revier', { token: hans.token })).data;
+  assert.ok(rev.features.find(f => f.id === k.id).last_service, 'letzte Beschickung im Revier-Datensatz');
+  const st = (await call('/features/' + standId, { token: hans.token, method: 'PUT', body: { wind_dirs: 'W, sw, nix, NW' } })).data;
+  assert.equal(st.wind_dirs, 'W,SW,NW', 'nur gültige Richtungen');
+  const t = (await call('/tasks', { token: hans.token, body: { title: 'Prüfung', kind: 'kanzelpruefung', feature_id: standId, assignee: 'Hans', due_date: '2026-12-01' } })).data;
+  await call('/tasks/' + t.id, { token: grete.token, method: 'PUT', body: { done: true } });
+  const tasks = (await call('/tasks', { token: hans.token })).data;
+  assert.ok(tasks[0].done_at); assert.equal(tasks[0].done_by_name, 'Grete'); assert.equal(tasks[0].feature_name, 'Kanzel Eichenwiese');
+  const rev2 = (await call('/revier', { token: hans.token })).data;
+  assert.ok(rev2.features.find(f => f.id === standId).last_check, 'Kanzelprüfung am Objekt sichtbar');
+  await call('/tasks/' + t.id, { token: hans.token, method: 'DELETE' });
+  await call('/features/' + k.id, { token: hans.token, method: 'DELETE' });
+});
+
+test('Wildunfall, Wildschaden und Kontakte', async () => {
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+  const u = (await call('/incidents', { token: hans.token, body: { kind: 'wildunfall', species: 'Rehwild', lat: 50.94, lng: 10.2, road: 'K12', police_ref: 'VU 1', photos: [png] } })).data;
+  assert.equal(u.kind, 'wildunfall'); assert.equal(u.photo_count, 1); assert.equal(u.status, 'gemeldet');
+  assert.ok((await call('/notifications', { token: grete.token })).data.some(x => x.title.startsWith('Wildunfall')));
+  const d = (await call('/incidents', { token: grete.token, body: { kind: 'wildschaden', species: 'Schwarzwild', lat: 50.95, lng: 10.21, crop: 'Mais', farmer: 'Müller', area_ha: 0.4 } })).data;
+  assert.equal(d.area_ha, 0.4);
+  const st = (await call('/incidents/' + d.id, { token: hans.token, method: 'PUT', body: { status: 'reguliert' } })).data;
+  assert.equal(st.status, 'reguliert');
+  assert.equal((await call('/incidents', { token: hans.token })).data.length, 2);
+  assert.equal((await call('/incidents/' + u.id, { token: grete.token, method: 'DELETE' })).status, 403);
+  await call('/incidents/' + u.id, { token: hans.token, method: 'DELETE' }); await call('/incidents/' + d.id, { token: hans.token, method: 'DELETE' });
+  const c = (await call('/contacts', { token: grete.token, body: { name: 'Gespann Müller', role: 'nachsuche', phone: '0170 1' } })).data;
+  await call('/contacts/' + c.id, { token: hans.token, method: 'PUT', body: { phone: '0170 2' } });
+  const list = (await call('/contacts', { token: hans.token })).data;
+  assert.equal(list.length, 1); assert.equal(list[0].phone, '0170 2');
+  await call('/contacts/' + c.id, { token: hans.token, method: 'DELETE' });
+  assert.equal((await call('/contacts', { token: hans.token })).data.length, 0);
+});
+
 test('Push-Schlüssel und Abonnement', async () => {
   const k = (await call('/push/key')).data;
   assert.ok(k.publicKey.length > 60);

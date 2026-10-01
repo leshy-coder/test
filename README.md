@@ -14,6 +14,8 @@ Jagd-Webanwendung für die Jagdgemeinschaft eines Reviers: aktuelles Wetter mit 
 - **Entfernungsmesser** und **Ebenen-Filter** (Kanzeln, Kameras, Kirrungen, Beschriftungen, Fährten, Anschüsse, Strecken, Gebiete, Grenze ein-/ausblenden), einklappbare Werkzeugleiste.
 - **Planung aller Jagdarten**: Drückjagd, Gemeinschaftsansitz, Buschieren, Vogeljagd, Frettieren, Fallenjagd, Revierarbeit mit Datum, Treffpunkt, Leitung, Belehrungstext und Status; Teilnehmer mit Rolle, Standzuweisung, Treiben-Zuordnung und Zusage; Materialliste („wer bringt was mit“); Checkliste passend zur Jagdart; Streckenliste.
 - **Terminkalender**: Hegeringsitzung, Trophäenschau und frei beschreibbare Termine mit Zusage/Vielleicht/Absage und Mitbringliste je Teilnehmer, Push an alle.
+- **Revierbuch** (unter „Mehr“): Streckenbuch mit Abschussplan je Jagdjahr und Druck/PDF, Revierarbeiten mit jährlicher Kanzelprüfung, Kirrungs- und Kameraprotokoll mit Fälligkeit, Wildunfälle und Wildschäden mit Fotos und PDF-Protokoll, Kontakte (Nachsuchengespann direkt aus dem Anschuss anrufbar), Jagdzeiten je Wildart mit Schonzeit-Warnung, Offline-Karte.
+- **Jagdpraktische Helfer**: Dämmerungs- und Mondzeiten je Ansitz, Wind-Eignung je Kanzel bei aktueller Windlage, „Jagdzeiten heute“ in der Wetteransicht.
 - **Echtzeit**: WebSocket-Broadcast, Online-Anzeige, In-App-Benachrichtigungsliste.
 - **PWA**: installierbar auf Android/iOS (Zum Home-Bildschirm), Web-Push über VAPID, Offline-Cache der App-Hülle.
 

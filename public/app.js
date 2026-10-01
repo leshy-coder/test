@@ -7,8 +7,8 @@ const state = {
   token: localStorage.getItem('token'),
   me: null, users: [], online: [],
   revier: { name: 'Mein Revier', center: { lat: 51.1657, lng: 10.4515, zoom: 6 }, boundaries: [], features: [] },
-  checkins: { active: [], history: [] }, sightings: [], shots: [], areas: [], events: [],
-  layerFilter: Object.assign({ kanzel: true, kamera: true, kirrung: true, sonstiges: true, labels: true, sightings: true, shots: true, areas: true, grenze: true, tracks: true }, JSON.parse(localStorage.getItem('layerFilter') || '{}')),
+  checkins: { active: [], history: [] }, sightings: [], shots: [], areas: [], events: [], incidents: [], contacts: [], tasks: [], seasons: [], seasonsNote: '', harvest: null, mehrPage: null,
+  layerFilter: Object.assign({ kanzel: true, kamera: true, kirrung: true, sonstiges: true, labels: true, sightings: true, shots: true, areas: true, grenze: true, tracks: true, incidents: true }, JSON.parse(localStorage.getItem('layerFilter') || '{}')),
   plans: [], hunts: [], hunt: null, huntTab: 'uebersicht',
   weather: null, notifications: [],
   view: 'karte', checkinMode: 'kanzel',
@@ -27,7 +27,7 @@ async function api(path, opts = {}) {
   if ((opts.method || (opts.body ? 'POST' : 'GET')) !== 'GET' && !opts.silent) refreshAfterWrite(path);
   return data;
 }
-const WRITE_REFRESH = [[/^\/(features|boundaries|revier)/, 'revier'], [/^\/areas/, 'areas'], [/^\/sightings/, 'sightings'], [/^\/shots/, 'shots'], [/^\/checkins/, 'checkins'], [/^\/plans/, 'plans'], [/^\/hunts/, 'hunts'], [/^\/events/, 'events'], [/^\/(admin|auth\/register)/, 'users']];
+const WRITE_REFRESH = [[/^\/(features|boundaries|revier|seasons)/, 'revier'], [/^\/(harvest|quota)/, 'harvest'], [/^\/tasks/, 'tasks'], [/^\/incidents/, 'incidents'], [/^\/contacts/, 'contacts'], [/^\/areas/, 'areas'], [/^\/sightings/, 'sightings'], [/^\/shots/, 'shots'], [/^\/checkins/, 'checkins'], [/^\/plans/, 'plans'], [/^\/hunts/, 'hunts'], [/^\/events/, 'events'], [/^\/(admin|auth\/register)/, 'users']];
 let refreshTimer, refreshSet = new Set();
 function refreshAfterWrite(path) {
   const hit = WRITE_REFRESH.find(([re]) => re.test(path)); if (!hit) return;
@@ -109,7 +109,7 @@ async function boot() {
   $('#btn-me').textContent = initials(state.me.name); $('#btn-me').style.background = state.me.color;
   $('#me-name').textContent = state.me.name;
   try { initMap(); } catch (e) { console.error('Karte konnte nicht initialisiert werden', e); toast('Karte nicht verfügbar', 'error'); }
-  await Promise.all([loadRevier(), loadUsers(), loadCheckins(), loadPlans(), loadHunts(), loadNotifications(), loadSightings(), loadShots(), loadAreas(), loadEvents()]);
+  await Promise.all([loadRevier(), loadUsers(), loadCheckins(), loadPlans(), loadHunts(), loadNotifications(), loadSightings(), loadShots(), loadAreas(), loadEvents(), loadIncidents(), loadContacts(), loadSeasons(), loadTasks()]);
   loadWeather();
   connectWs();
   startPolling();
@@ -121,7 +121,7 @@ async function boot() {
 
 // ---------- Live-Updates: Abfrage der Versionszähler (überall) + WebSocket (nur lokaler Server) ----------
 let ws, wsTimer, wsFailures = 0, wsEverOpen = false, pollTimer, knownVersions = null;
-const loaders = { users: () => loadUsers(), revier: loadRevier, checkins: () => loadCheckins().then(loadNotifications), plans: () => loadPlans().then(loadNotifications), hunts: refreshHunts, sightings: () => loadSightings().then(loadNotifications), shots: () => loadShots().then(loadNotifications), areas: loadAreas, events: () => loadEvents().then(loadNotifications) };
+const loaders = { users: () => loadUsers(), revier: loadRevier, checkins: () => loadCheckins().then(loadNotifications), plans: () => loadPlans().then(loadNotifications), hunts: refreshHunts, sightings: () => loadSightings().then(loadNotifications), shots: () => loadShots().then(loadNotifications), areas: loadAreas, events: () => loadEvents().then(loadNotifications), incidents: () => loadIncidents().then(loadNotifications), contacts: loadContacts, tasks: loadTasks, harvest: loadHarvest };
 function refreshHunts(data = {}) {
   return loadHunts().then(() => { if (state.hunt && (!data.hunt_id || data.hunt_id === state.hunt.id)) return loadHunt(state.hunt.id); }).then(loadNotifications);
 }
@@ -174,6 +174,7 @@ function routeFromHash() {
   if (h.startsWith('plan-')) { view = 'ansitz'; setTimeout(() => $(`#plan-${h.slice(5)}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 200); }
   if (h.startsWith('jagd-')) { view = 'jagd'; loadHunt(Number(h.slice(5))); }
   if (h.startsWith('termin-')) { view = 'jagd'; state.hunt = null; setTimeout(() => { renderHunts(); $(`#termin-${h.slice(7)}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 150); }
+  if (h.startsWith('mehr-')) { view = 'mehr'; state.mehrPage = h.slice(5); } else if (h === 'mehr') state.mehrPage = null;
   if (!['karte', 'wetter', 'ansitz', 'jagd', 'mehr'].includes(view)) view = 'karte';
   showView(view);
 }
@@ -184,21 +185,21 @@ function showView(v) {
   if (v === 'karte' && map) setTimeout(() => map.invalidateSize(), 50);
   if (v === 'ansitz') markPlansRead();
   if (v === 'jagd' && !location.hash.startsWith('#jagd-')) { state.hunt = null; renderHunts(); }
-  if (v === 'mehr') renderSettings();
+  if (v === 'mehr') { renderSettings(); renderMehr(); }
 }
 
 // ---------- Users ----------
 async function loadUsers() { state.users = await api('/users'); }
 
 // ---------- Revier / Map ----------
-let map, layers = {}, boundaryLayer, areaLayer, featureLayer, checkinLayer, sightingLayer, shotLayer, trackLayer, measureLayer, pathLayer, drawControl, activeTool = null, meMarker, pendingFlightShot = null;
+let map, layers = {}, boundaryLayer, areaLayer, featureLayer, checkinLayer, sightingLayer, shotLayer, trackLayer, measureLayer, pathLayer, incidentLayer, drawControl, activeTool = null, meMarker, pendingFlightShot = null;
 // Rendering bündeln: mehrere Datenänderungen kurz hintereinander führen nur zu einem Neuzeichnen
 const renderQueue = new Set(); let renderScheduled = false;
 function scheduleRender(fn) { renderQueue.add(fn); if (renderScheduled) return; renderScheduled = true; requestAnimationFrame(() => { renderScheduled = false; const fns = [...renderQueue]; renderQueue.clear(); fns.forEach(f => f()); }); }
 function applyLayerFilter() {
   const f = state.layerFilter;
-  const want = { boundaryLayer: f.grenze, areaLayer: f.areas, sightingLayer: f.sightings, shotLayer: f.shots, trackLayer: f.tracks };
-  for (const [name, on] of Object.entries(want)) { const l = { boundaryLayer, areaLayer, sightingLayer, shotLayer, trackLayer }[name]; if (!l) continue; if (on && !map.hasLayer(l)) l.addTo(map); if (!on && map.hasLayer(l)) map.removeLayer(l); }
+  const want = { boundaryLayer: f.grenze, areaLayer: f.areas, sightingLayer: f.sightings, shotLayer: f.shots, trackLayer: f.tracks, incidentLayer: f.incidents !== false };
+  for (const [name, on] of Object.entries(want)) { const l = { boundaryLayer, areaLayer, sightingLayer, shotLayer, trackLayer, incidentLayer }[name]; if (!l) continue; if (on && !map.hasLayer(l)) l.addTo(map); if (!on && map.hasLayer(l)) map.removeLayer(l); }
   localStorage.setItem('layerFilter', JSON.stringify(f));
 }
 const featureKinds = { kanzel: 'Kanzel', kamera: 'Wildkamera', kirrung: 'Kirrung', sonstiges: 'Sonstiges' };
@@ -218,6 +219,7 @@ function initMap() {
   areaLayer = new L.FeatureGroup().addTo(map);
   trackLayer = new L.FeatureGroup().addTo(map);
   pathLayer = new L.FeatureGroup().addTo(map);
+  incidentLayer = new L.FeatureGroup().addTo(map);
   featureLayer = new L.FeatureGroup().addTo(map);
   checkinLayer = new L.FeatureGroup().addTo(map);
   sightingLayer = new L.FeatureGroup().addTo(map);
@@ -293,6 +295,9 @@ function setTool(tool) {
     hint.classList.add('hidden');
     $('#map').style.cursor = 'crosshair';
     $('#path-box').classList.remove('hidden');
+  } else if (tool === 'unfall' || tool === 'schaden') {
+    hint.textContent = tool === 'unfall' ? 'Tippe auf die Karte an die Unfallstelle' : 'Tippe auf die Karte an die Schadensfläche';
+    $('#map').style.cursor = 'crosshair';
   } else if (tool === 'fund') {
     hint.textContent = 'Tippe auf die Karte an den Fundort des Stücks';
     $('#map').style.cursor = 'crosshair';
@@ -301,7 +306,7 @@ function setTool(tool) {
     $('#map').style.cursor = 'crosshair';
   }
 }
-const PLACEMENT_TOOLS = ['messen', 'faehrte', 'anschuss', 'flucht', 'fund', 'kanzel', 'kamera', 'kirrung'];
+const PLACEMENT_TOOLS = ['messen', 'faehrte', 'anschuss', 'flucht', 'fund', 'kanzel', 'kamera', 'kirrung', 'unfall', 'schaden'];
 // ---- Ebenen-Menü: Kartenansicht + Filter ----
 function showLayerMenuV2() {
   if ($('.layer-menu')) return $('.layer-menu').remove();
@@ -312,7 +317,7 @@ function showLayerMenuV2() {
   const cb = (k, label) => `<label><input type="checkbox" data-filter="${k}" ${f[k] ? 'checked' : ''}>${label}</label>`;
   menu.innerHTML = `<h4>Karte</h4>${Object.entries(names).map(([k, v]) => `<button data-layer="${k}" class="${k === current ? 'active' : ''}">${v}</button>`).join('')}
     <h4>Anzeigen</h4>${cb('kanzel', 'Kanzeln')}${cb('kamera', 'Wildkameras')}${cb('kirrung', 'Kirrungen')}${cb('sonstiges', 'Sonstige Punkte')}${cb('labels', 'Beschriftungen')}
-    ${cb('sightings', 'Fährten')}${cb('shots', 'Anschüsse / Nachsuche')}${cb('tracks', 'Nachsuche-Strecken')}${cb('areas', 'Gebiete')}${cb('grenze', 'Reviergrenze')}`;
+    ${cb('sightings', 'Fährten')}${cb('shots', 'Anschüsse / Nachsuche')}${cb('tracks', 'Nachsuche-Strecken')}${cb('incidents', 'Wildunfälle / Wildschäden')}${cb('areas', 'Gebiete')}${cb('grenze', 'Reviergrenze')}`;
   $$('button[data-layer]', menu).forEach(b => b.onclick = () => {
     Object.values(layers).forEach(l => map.removeLayer(l));
     layers[b.dataset.layer].addTo(map); localStorage.setItem('layer', b.dataset.layer);
@@ -331,6 +336,7 @@ async function onMapClick(e) {
   if (activeTool === 'messen') return addMeasurePoint(e.latlng);
   if (activeTool === 'faehrte') { setTool(null); return sightingDialog({ lat: e.latlng.lat, lng: e.latlng.lng }); }
   if (activeTool === 'anschuss') { setTool(null); return shotDialog({ lat: e.latlng.lat, lng: e.latlng.lng }); }
+  if (activeTool === 'unfall' || activeTool === 'schaden') { const kind = activeTool === 'unfall' ? 'wildunfall' : 'wildschaden'; setTool(null); return incidentDialog({ kind, lat: e.latlng.lat, lng: e.latlng.lng }); }
   if (activeTool === 'fund' && pendingFound) {
     const id = pendingFound; pendingFound = null; setTool(null);
     try { await api('/shots/' + id, { method: 'PUT', body: { status: 'gefunden', found_lat: e.latlng.lat, found_lng: e.latlng.lng } }); toast('Fundort gespeichert – Waidmannsheil!'); } catch (err) { toast(err.message, 'error'); }
@@ -390,7 +396,8 @@ function renderMapFeatures() {
   for (const f of state.revier.features) {
     if (!state.layerFilter[f.kind]) continue;
     const occ = occupied.get(f.id);
-    const m = L.marker([f.lat, f.lng], { icon: markerIcon(f.kind, (occ ? 'occupied ' : '') + (planned.has(f.id) ? 'planned' : '')), draggable: true });
+    const extra = [occ ? 'occupied' : '', planned.has(f.id) ? 'planned' : '', serviceOverdue(f) ? 'overdue' : '', windClass(f)].filter(Boolean).join(' ');
+    const m = L.marker([f.lat, f.lng], { icon: markerIcon(f.kind, extra), draggable: true });
     m.bindTooltip(f.name, { permanent: !!state.layerFilter.labels, direction: 'bottom', offset: [0, 2], className: 'marker-label' });
     m.on('dragend', async () => { const p = m.getLatLng(); await api('/features/' + f.id, { method: 'PUT', body: { lat: p.lat, lng: p.lng } }); });
     m.on('click', () => { if (markerClickDuringPlacement(m.getLatLng())) return; openFeaturePopup(m, f, occ); });
@@ -448,14 +455,34 @@ function areaDialog(a) {
     };
   });
 }
+// Beschickungs-/Kontrollintervall überschritten?
+function serviceOverdue(f) {
+  if (!f.interval_days) return false;
+  if (!f.last_service) return true;
+  return (Date.now() - new Date(f.last_service).getTime()) / 86400e3 > f.interval_days;
+}
+const COMPASS8 = ['N', 'NO', 'O', 'SO', 'S', 'SW', 'W', 'NW'];
+const compass8 = deg => COMPASS8[Math.round(deg / 45) % 8];
+function windClass(f) {
+  if (f.kind !== 'kanzel' || !f.wind_dirs || !state.weather?.current) return '';
+  return f.wind_dirs.split(',').includes(compass8(state.weather.current.wind_direction_10m)) ? 'wind-ok' : 'wind-bad';
+}
+const windSuits = f => windClass(f) === 'wind-ok';
+function checkAge(f) { if (!f.last_check) return null; return Math.floor((Date.now() - new Date(f.last_check).getTime()) / 86400e3); }
 function openFeaturePopup(marker, f, occ) {
   const planned = state.plans.filter(p => p.status === 'offen' && p.feature_id === f.id);
-  const html = `<h3>${esc(f.name)}</h3><div class="muted small">${featureKinds[f.kind]}${f.notes ? ' · ' + esc(f.notes) : ''}</div>
+  const service = f.interval_days ? `<div class="small ${serviceOverdue(f) ? 'season-closed' : 'season-ok'}">${f.kind === 'kamera' ? 'Kartentausch' : 'Beschickung'} alle ${f.interval_days} Tage · zuletzt ${f.last_service ? ageText(f.last_service) : 'nie'}${serviceOverdue(f) ? ' · fällig!' : ''}</div>` : '';
+  const wind = f.kind === 'kanzel' && f.wind_dirs ? `<div class="small ${windClass(f) === 'wind-ok' ? 'season-ok' : windClass(f) === 'wind-bad' ? 'season-closed' : ''}">Guter Wind aus ${esc(f.wind_dirs.replace(/,/g, ', '))}${state.weather?.current ? ` · aktuell ${compass8(state.weather.current.wind_direction_10m)} ${windClass(f) === 'wind-ok' ? '✓ passt' : '✕ passt nicht'}` : ''}</div>` : '';
+  const check = f.kind === 'kanzel' ? `<div class="small ${checkAge(f) === null || checkAge(f) > 365 ? 'season-closed' : 'season-ok'}">Standsicherheitsprüfung: ${checkAge(f) === null ? 'keine dokumentiert' : `vor ${checkAge(f)} Tagen`}${checkAge(f) === null || checkAge(f) > 365 ? ' · fällig' : ''}</div>` : '';
+  const html = `<h3>${esc(f.name)}</h3><div class="muted small">${featureKinds[f.kind]}${f.notes ? ' · ' + esc(f.notes) : ''}</div>${service}${wind}${check}
     ${occ ? `<p><b style="color:var(--danger)">Besetzt:</b> ${esc(occ.user_name)} (${ago(occ.started_at)})</p>` : ''}
     ${planned.map(p => `<p class="small">Angekündigt: ${esc(p.user_name)} ${fmtDT(p.planned_at)}</p>`).join('')}
     <div class="row">
       ${f.kind === 'kanzel' && !occ ? `<button class="btn sm primary" data-act="checkin">Hier einchecken</button>` : ''}
       ${f.kind === 'kanzel' ? `<button class="btn sm" data-act="plan">Ankündigen</button>` : ''}
+      ${f.kind === 'kirrung' ? `<button class="btn sm" data-log="beschickt">Beschickt</button>` : ''}
+      ${f.kind === 'kamera' ? `<button class="btn sm" data-log="karte">Karte getauscht</button><button class="btn sm" data-log="batterie">Batterie</button>` : ''}
+      ${f.kind === 'kanzel' ? `<button class="btn sm" data-act="check">Prüfung erledigt</button>` : ''}
       <button class="btn sm" data-act="edit">Bearbeiten</button>
     </div>`;
   marker.bindPopup(html).openPopup();
@@ -463,6 +490,14 @@ function openFeaturePopup(marker, f, occ) {
   $('[data-act="checkin"]', pop)?.addEventListener('click', () => { map.closePopup(); doCheckin('kanzel', f.id, ''); });
   $('[data-act="plan"]', pop)?.addEventListener('click', () => { map.closePopup(); location.hash = 'ansitz'; state.checkinMode = 'kanzel'; renderCheckinForm(); $('#checkin-stand').value = f.id; $('#plan-form').classList.remove('hidden'); });
   $('[data-act="edit"]', pop)?.addEventListener('click', () => { map.closePopup(); editFeature(f.id); });
+  $$('[data-log]', pop).forEach(b => b.onclick = async () => { map.closePopup(); try { await api(`/features/${f.id}/logs`, { body: { kind: b.dataset.log } }); toast('Eingetragen'); } catch (e) { toast(e.message, 'error'); } });
+  $('[data-act="check"]', pop)?.addEventListener('click', async () => {
+    map.closePopup();
+    try {
+      const r = await api('/tasks', { body: { title: `Standsicherheitsprüfung ${f.name}`, kind: 'kanzelpruefung', feature_id: f.id, assignee: state.me.name } });
+      await api('/tasks/' + r.id, { method: 'PUT', body: { done: true } }); toast('Prüfung dokumentiert');
+    } catch (e) { toast(e.message, 'error'); }
+  });
 }
 function editFeature(id) {
   const f = state.revier.features.find(x => x.id === id); if (!f) return;
@@ -470,9 +505,12 @@ function editFeature(id) {
     <label>Name<input id="f-name" value="${esc(f.name)}" maxlength="80"></label>
     <label>Art<select id="f-kind">${Object.entries(featureKinds).map(([k, v]) => `<option value="${k}" ${k === f.kind ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
     <label>Notizen<textarea id="f-notes" maxlength="1000">${esc(f.notes)}</textarea></label>
+    <label id="f-interval-l" class="${f.kind === 'kirrung' || f.kind === 'kamera' ? '' : 'hidden'}">${f.kind === 'kamera' ? 'Kartentausch / Kontrolle alle … Tage' : 'Beschickung alle … Tage'}<input id="f-interval" type="number" min="1" max="365" value="${f.interval_days || ''}" placeholder="z. B. 7 (leer = keine Erinnerung)"></label>
+    <div id="f-wind-l" class="${f.kind === 'kanzel' ? '' : 'hidden'}"><label>Guter Wind aus Richtung (Wind weht von …)</label><div class="signs">${COMPASS8.map(d => `<label><input type="checkbox" name="f-wind" value="${d}" ${(f.wind_dirs || '').split(',').includes(d) ? 'checked' : ''}>${d}</label>`).join('')}</div></div>
     <p class="muted small">Position: ${f.lat.toFixed(5)}, ${f.lng.toFixed(5)} – Marker auf der Karte lässt sich verschieben.</p>
     <div class="row"><button class="btn primary" id="f-save">Speichern</button><button class="btn danger" id="f-del">Löschen</button><button class="btn" data-close>Abbrechen</button></div>`, d => {
-    $('#f-save', d).onclick = async () => { await api('/features/' + f.id, { method: 'PUT', body: { name: $('#f-name', d).value, kind: $('#f-kind', d).value, notes: $('#f-notes', d).value } }); closeDialog(); };
+    $('#f-kind', d).onchange = () => { const k = $('#f-kind', d).value; $('#f-interval-l', d).classList.toggle('hidden', !(k === 'kirrung' || k === 'kamera')); $('#f-wind-l', d).classList.toggle('hidden', k !== 'kanzel'); };
+    $('#f-save', d).onclick = async () => { await api('/features/' + f.id, { method: 'PUT', body: { name: $('#f-name', d).value, kind: $('#f-kind', d).value, notes: $('#f-notes', d).value, interval_days: $('#f-interval', d).value || null, wind_dirs: $$('input[name=f-wind]:checked', d).map(x => x.value).join(',') } }); closeDialog(); };
     $('#f-del', d).onclick = async () => { if (confirm(`„${f.name}“ wirklich löschen?`)) { await api('/features/' + f.id, { method: 'DELETE' }); closeDialog(); } };
   });
 }
@@ -538,7 +576,7 @@ function renderStandSelect() {
   const stands = state.revier.features.filter(f => f.kind === 'kanzel');
   const occupied = new Set(state.checkins.active.map(c => c.feature_id));
   const cur = sel.value;
-  sel.innerHTML = stands.length ? stands.map(f => `<option value="${f.id}" ${occupied.has(f.id) ? 'data-occ="1"' : ''}>${esc(f.name)}${occupied.has(f.id) ? ' (besetzt)' : ''}</option>`).join('')
+  sel.innerHTML = stands.length ? stands.map(f => `<option value="${f.id}" ${occupied.has(f.id) ? 'data-occ="1"' : ''}>${esc(f.name)}${occupied.has(f.id) ? ' (besetzt)' : ''}${windClass(f) === 'wind-ok' ? ' ✓ Wind passt' : windClass(f) === 'wind-bad' ? ' ✕ Wind ungünstig' : ''}</option>`).join('')
     : '<option value="">Noch keine Kanzel angelegt – auf der Karte setzen</option>';
   if (cur) sel.value = cur;
 }
@@ -551,7 +589,44 @@ $('#btn-checkin').onclick = () => doCheckin(state.checkinMode, Number($('#checki
 $('#btn-plan-toggle').onclick = () => {
   const f = $('#plan-form'); f.classList.toggle('hidden');
   if (!$('#plan-time').value) { const d = new Date(Date.now() + 2 * 3600e3); d.setMinutes(0, 0, 0); $('#plan-time').value = toLocalInput(d); }
+  renderPlanTwilight();
 };
+function renderPlanTwilight() {
+  let box = $('#plan-twilight'); if (!box) { box = document.createElement('div'); box.id = 'plan-twilight'; box.className = 'twilight'; $('#plan-time').closest('label').after(box); }
+  const d = new Date($('#plan-time').value); if (Number.isNaN(d.getTime())) { box.innerHTML = ''; return; }
+  box.innerHTML = twilightHtml(d);
+}
+$('#plan-time').addEventListener('change', renderPlanTwilight);
+function revierCenter() { const b = boundaryLayer?.getBounds(); return b && b.isValid() ? b.getCenter() : state.revier.center; }
+function twilightHtml(d) {
+  const c = revierCenter(); const t = sunTimes(d, c.lat, c.lng); const m = moonPhaseClient(d);
+  const f = x => x ? x.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : '–';
+  return `<span>🌅 Dämmerung ${f(t.dawn)} · Aufgang ${f(t.sunrise)}</span><span>🌇 Untergang ${f(t.sunset)} · Dämmerung bis ${f(t.dusk)}</span><span>${moonIcon(m.index)} ${m.name} ${m.illumination} %</span>`;
+}
+// Sonnenauf-/-untergang und bürgerliche Dämmerung (NOAA-Näherung, auf wenige Minuten genau)
+function sunTimes(date, lat, lng) {
+  const rad = Math.PI / 180;
+  const day = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
+  const n = Math.floor(day / 86400000) - 10957.5; // Tage seit J2000
+  const M = (357.5291 + 0.98560028 * n) % 360;
+  const C = 1.9148 * Math.sin(M * rad) + 0.02 * Math.sin(2 * M * rad) + 0.0003 * Math.sin(3 * M * rad);
+  const lam = (M + C + 180 + 102.9372) % 360;
+  const decl = Math.asin(Math.sin(lam * rad) * Math.sin(23.44 * rad));
+  const eqt = 4 * (M + C + 102.9372 + 180 - lam) ; // Minuten, nähert sich der Zeitgleichung
+  const solarNoonUtc = 720 - 4 * lng - eqtCorrect(n); // Minuten UTC
+  function eqtCorrect(n) { const g = (357.528 + 0.9856003 * n) * rad; const q = (280.459 + 0.98564736 * n); const L = (q + 1.915 * Math.sin(g) + 0.02 * Math.sin(2 * g)) * rad; const e = 23.439 * rad; const RA = Math.atan2(Math.cos(e) * Math.sin(L), Math.cos(L)) / rad; return ((q - ((RA % 360) + 360) % 360 + 540) % 360 - 180) * 4; }
+  const ha = alt => { const cosH = (Math.sin(alt * rad) - Math.sin(lat * rad) * Math.sin(decl)) / (Math.cos(lat * rad) * Math.cos(decl)); return cosH < -1 || cosH > 1 ? null : Math.acos(cosH) / rad * 4; };
+  const mk = mins => mins === null ? null : new Date(day + mins * 60000);
+  const h0 = ha(-0.833), h6 = ha(-6);
+  void eqt;
+  return { sunrise: mk(h0 === null ? null : solarNoonUtc - h0), sunset: mk(h0 === null ? null : solarNoonUtc + h0), dawn: mk(h6 === null ? null : solarNoonUtc - h6), dusk: mk(h6 === null ? null : solarNoonUtc + h6) };
+}
+function moonPhaseClient(date) {
+  const synodic = 29.53058867, ref = Date.UTC(2000, 0, 6, 18, 14);
+  const age = (((date.getTime() - ref) / 86400000) % synodic + synodic) % synodic, fraction = age / synodic;
+  const names = ['Neumond', 'Zunehmende Sichel', 'Erstes Viertel', 'Zunehmender Mond', 'Vollmond', 'Abnehmender Mond', 'Letztes Viertel', 'Abnehmende Sichel'];
+  return { illumination: Math.round((1 - Math.cos(fraction * 2 * Math.PI)) / 2 * 100), name: names[Math.round(fraction * 8) % 8], index: Math.round(fraction * 8) % 8 };
+}
 const toLocalInput = d => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 $('#btn-plan').onclick = async () => {
   try {
@@ -605,6 +680,7 @@ function renderPlans() {
     return `<div class="${cls}" id="plan-${p.id}" data-id="${p.id}">
       <div class="plan-head"><div><div class="time">${fmtDT(p.planned_at)}</div><div>${avatar(p)} <b>${esc(p.user_name)}${mine ? ' (ich)' : ''}</b> ${spotText(p.mode, p.feature_name)}</div></div>${statusTag}</div>
       ${p.note ? `<div class="note">„${esc(p.note)}“</div>` : ''}
+      ${p.status === 'offen' ? `<div class="twilight">${twilightHtml(new Date(p.planned_at))}</div>` : ''}
       <div class="receipts">${receipts || '<span class="muted small">Keine weiteren Nutzer.</span>'}</div>
       <div class="row" style="margin-top:.5rem">${actions}</div>
     </div>`;
@@ -712,7 +788,14 @@ async function openShotPopup(marker, sh) {
       ${mine ? `<button class="btn sm" data-act="flucht">${parsePathClient(sh).length ? 'Fluchtweg bearbeiten' : 'Fluchtweg setzen'}</button><button class="btn sm" data-act="edit">Bearbeiten</button><button class="btn sm danger" data-act="del">Löschen</button>` : ''}
     </div>`, { maxWidth: 320 }).openPopup();
   if (sh.track_m > 0) loadTracksFor(sh.id);
-  $('[data-act="track"]', marker.getPopup().getElement())?.addEventListener('click', () => { map.closePopup(); if (track?.shotId !== sh.id) startTrack(sh); });
+  const popEl = marker.getPopup().getElement();
+  $('[data-act="track"]', popEl)?.addEventListener('click', () => { map.closePopup(); if (track?.shotId !== sh.id) startTrack(sh); });
+  const gespanne = state.contacts.filter(c => c.role === 'nachsuche' && c.phone);
+  if (gespanne.length && sh.status !== 'gefunden') {
+    const div = document.createElement('div'); div.className = 'row'; div.style.marginTop = '.4rem';
+    div.innerHTML = gespanne.map(c => `<a class="btn sm primary" href="tel:${esc(c.phone.replace(/\s+/g, ''))}">📞 ${esc(c.name)}</a>`).join('');
+    $('.leaflet-popup-content', popEl)?.appendChild(div);
+  }
   const pop = marker.getPopup().getElement();
   $('[data-act="status"]', pop)?.addEventListener('click', async () => {
     const val = $('[data-act="status"]', pop).dataset.val; map.closePopup();
@@ -968,7 +1051,7 @@ async function loadWeather() {
   try {
     const c = boundaryLayer?.getBounds().isValid() ? boundaryLayer.getBounds().getCenter() : state.revier.center;
     state.weather = await api(`/weather?lat=${c.lat}&lng=${c.lng}`);
-    renderWeather(); renderWindBadge();
+    renderWeather(); renderWindBadge(); scheduleRender(renderMapFeatures); renderStandSelect();
   } catch (e) { $('#weather-content').innerHTML = `<div class="card"><p class="muted">Wetter konnte nicht geladen werden: ${esc(e.message)}</p></div>`; }
 }
 function huntingTip(w) {
@@ -1015,6 +1098,8 @@ function renderWeather() {
       </div>
       <div class="hunt-tip">🦌 ${huntingTip(w)}</div>
     </div>
+    ${renderWindStandsCard()}
+    ${renderSeasonsTodayCard()}
     <div class="card"><h2>Nächste 24 Stunden</h2>
       <div class="hourly">${hours.map(({ i, t }, k) => { const [, ic] = wmo(w.hourly.weather_code[i], new Date(t) > new Date(sunrise) && new Date(t) < new Date(sunset) ? 1 : 0); return `
         <div class="hour ${k === 0 ? 'now' : ''}"><div>${fmtTime(t)}</div><div>${ic}</div><div class="t">${Math.round(w.hourly.temperature_2m[i])}°</div>
@@ -1169,7 +1254,8 @@ function renderHuntDetail() {
 
   if (state.huntTab === 'strecke') body = `<div class="card">
       ${h.bag.length ? `<table class="table"><tr><th>Wildart</th><th>Stück</th><th>Erleger</th><th>Notiz</th><th></th></tr>${h.bag.map(b => `<tr><td><b>${esc(b.species)}</b></td><td>${b.count}</td><td>${esc(b.shooter)}</td><td class="muted small">${esc(b.notes)}</td><td><button class="btn sm" data-del-bag="${b.id}">✕</button></td></tr>`).join('')}</table>` : '<p class="muted">Noch keine Strecke erfasst.</p>'}
-      <div class="inline-form"><label>Wildart<select id="b-species"><option>Schwarzwild – Frischling</option><option>Schwarzwild – Überläufer</option><option>Schwarzwild – Bache</option><option>Schwarzwild – Keiler</option><option>Rehwild – Bock</option><option>Rehwild – Ricke</option><option>Rehwild – Kitz</option><option>Rotwild</option><option>Damwild</option><option>Fuchs</option><option>Sonstiges</option></select></label>
+      <div class="row" style="margin-top:.5rem"><button class="btn sm" id="b-print">Streckenmeldung drucken / PDF</button></div>
+      <div class="inline-form"><label>Wildart<select id="b-species">${speciesOptions()}</select></label>
         <label>Stück<input id="b-count" type="number" min="1" value="1"></label><label>Erleger<input id="b-shooter" maxlength="80" list="shooter-list"><datalist id="shooter-list">${h.participants.map(p => `<option value="${esc(p.name)}">`).join('')}</datalist></label><label>Notiz<input id="b-notes" maxlength="300"></label><button class="btn primary" id="b-add">Eintragen</button></div>
     </div>`;
 
@@ -1212,8 +1298,321 @@ function renderHuntDetail() {
   $$('[data-del-task]', root).forEach(b => b.onclick = () => act(() => api(`${H}/tasks/${b.dataset.delTask}`, { method: 'DELETE' })));
   $('#t-add', root)?.addEventListener('click', () => act(() => api(`${H}/tasks`, { body: { text: $('#t-text').value, assignee: $('#t-who').value } })));
   // Strecke
-  $('#b-add', root)?.addEventListener('click', () => act(() => api(`${H}/bag`, { body: { species: $('#b-species').value, count: $('#b-count').value, shooter: $('#b-shooter').value, notes: $('#b-notes').value } })));
+  $('#b-add', root)?.addEventListener('click', () => { if (!seasonConfirm($('#b-species').value, h.date)) return; act(() => api(`${H}/bag`, { body: { species: $('#b-species').value, count: $('#b-count').value, shooter: $('#b-shooter').value, notes: $('#b-notes').value } })); });
+  $('#b-print', root)?.addEventListener('click', () => printHuntBag(h));
   $$('[data-del-bag]', root).forEach(b => b.onclick = () => act(() => api(`${H}/bag/${b.dataset.delBag}`, { method: 'DELETE' })));
+}
+
+// ===================== Revierbuch (Bereich „Mehr“) =====================
+async function loadSeasons() { try { const r = await api('/seasons'); state.seasons = r.seasons; state.seasonsNote = r.note; } catch {} }
+async function loadContacts() { state.contacts = await api('/contacts'); if (state.mehrPage === 'kontakte') renderMehr(); }
+async function loadTasks() { state.tasks = await api('/tasks'); if (state.mehrPage === 'arbeiten') renderMehr(); }
+async function loadHarvest(season) { state.harvest = await api('/harvest' + (season ? `?season=${encodeURIComponent(season)}` : (state.harvest ? `?season=${encodeURIComponent(state.harvest.season)}` : ''))); if (state.mehrPage === 'strecke') renderMehr(); }
+async function loadIncidents() { state.incidents = await api('/incidents'); scheduleRender(renderIncidentMarkers); if (state.mehrPage === 'vorfaelle') renderMehr(); }
+
+// Jagdzeiten
+function seasonFor(species) { return state.seasons.find(x => x.species === species) || state.seasons.find(x => species && (x.species.startsWith(species) || species.startsWith(x.species))); }
+function inSeason(entry, date) {
+  if (!entry) return null; if (!entry.from || !entry.to) return true;
+  const md = `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  return entry.from <= entry.to ? (md >= entry.from && md <= entry.to) : (md >= entry.from || md <= entry.to);
+}
+const fmtMd = md => md ? `${md.slice(3)}.${md.slice(0, 2)}.` : '';
+function speciesOptions(selected) { return (state.seasons.length ? state.seasons.map(x => x.species) : ['Rehwild', 'Schwarzwild', 'Rotwild', 'Damwild', 'Fuchs', 'Sonstiges']).concat(['Sonstiges']).map(x => `<option ${x === selected ? 'selected' : ''}>${esc(x)}</option>`).join(''); }
+function seasonConfirm(species, dateStr) {
+  const e = seasonFor(species); const ok = inSeason(e, dateStr ? new Date(dateStr) : new Date());
+  if (ok === false) return confirm(`Achtung: Für „${species}“ ist am ${fmtDate(dateStr || new Date().toISOString())} Schonzeit (Jagdzeit ${fmtMd(e.from)} – ${fmtMd(e.to)}). Trotzdem eintragen?`);
+  return true;
+}
+function renderSeasonsTodayCard() {
+  if (!state.seasons.length) return '';
+  const today = new Date();
+  const open = state.seasons.filter(x => inSeason(x, today)), closed = state.seasons.filter(x => !inSeason(x, today));
+  return `<div class="card"><h2>Jagdzeiten heute</h2><div class="receipts">${open.map(x => `<span class="chip confirmed">${esc(x.species)}</span>`).join('')}</div>
+    ${closed.length ? `<p class="muted small" style="margin-top:.5rem">Schonzeit: ${closed.map(x => esc(x.species)).join(', ')}</p>` : ''}<p class="muted small">${esc(state.seasonsNote)} Änderbar unter Mehr → Jagdzeiten.</p></div>`;
+}
+function renderWindStandsCard() {
+  const w = state.weather?.current; const stands = state.revier.features.filter(f => f.kind === 'kanzel' && f.wind_dirs);
+  if (!w || !stands.length) return '';
+  const good = stands.filter(windSuits), bad = stands.filter(f => !windSuits(f));
+  return `<div class="card"><h2>Kanzeln bei ${compass8(w.wind_direction_10m)}-Wind</h2>
+    <div class="receipts">${good.map(f => `<span class="chip confirmed">✓ ${esc(f.name)}</span>`).join('')}${bad.map(f => `<span class="chip">✕ ${esc(f.name)}</span>`).join('')}</div>
+    <p class="muted small">Die guten Windrichtungen trägst du je Kanzel unter „Bearbeiten“ ein. Kanzeln ohne Angabe fehlen hier.</p></div>`;
+}
+
+// Druck / PDF
+function openPrint(title, bodyHtml) {
+  const w = window.open('', '_blank');
+  if (!w) return toast('Pop-up blockiert – bitte erlauben', 'error');
+  w.document.write(`<!doctype html><html lang="de"><head><meta charset="utf-8"><title>${esc(title)}</title><style>body{font-family:Georgia,serif;margin:2cm;color:#222}h1{font-size:1.6rem;margin:0 0 .2rem}h2{font-size:1.1rem;margin:1.2rem 0 .4rem}table{border-collapse:collapse;width:100%;font-size:.95rem}th,td{border:1px solid #999;padding:.35rem .5rem;text-align:left}th{background:#eee}.muted{color:#666;font-size:.85rem}.sig{margin-top:3rem;display:flex;gap:3rem}.sig div{flex:1;border-top:1px solid #333;padding-top:.3rem;font-size:.85rem}@media print{button{display:none}}</style></head><body>${bodyHtml}<p class="muted">Erstellt mit RevierApp am ${fmtDT(new Date().toISOString())}</p><button onclick="print()">Drucken / als PDF speichern</button></body></html>`);
+  w.document.close(); setTimeout(() => { try { w.print(); } catch {} }, 400);
+}
+function printHuntBag(h) {
+  const rows = h.bag.map(b => `<tr><td>${esc(b.species)}</td><td>${b.count}</td><td>${esc(b.shooter)}</td><td>${esc(b.notes)}</td></tr>`).join('');
+  openPrint(`Streckenmeldung ${h.title}`, `<h1>Streckenmeldung</h1><div class="muted">${esc(state.revier.name)}</div>
+    <h2>${esc(h.title)}</h2><p>${HUNT_TYPES[h.type] || 'Jagd'} am ${fmtDate(h.date)}${h.meet_point ? ', Treffpunkt ' + esc(h.meet_point) : ''}${h.leader ? ' · Leitung: ' + esc(h.leader) : ''}</p>
+    <table><tr><th>Wildart</th><th>Stück</th><th>Erleger</th><th>Bemerkung</th></tr>${rows || '<tr><td colspan="4">Keine Strecke</td></tr>'}<tr><th colspan="1">Gesamt</th><th>${h.bag.reduce((a, b) => a + b.count, 0)}</th><th colspan="2"></th></tr></table>
+    <h2>Teilnehmer (${h.participants.length})</h2><p>${h.participants.map(p => esc(p.name) + ' (' + ROLE_NAMES[p.role] + ')').join(', ') || '–'}</p>
+    <div class="sig"><div>Jagdleitung</div><div>Datum, Unterschrift</div></div>`);
+}
+function printHarvest(hv) {
+  const rows = hv.entries.map(e => `<tr><td>${fmtDate(e.date)}</td><td>${esc(e.species)}</td><td>${e.count}</td><td>${esc(e.shooter)}</td><td>${e.weight_kg ?? ''}</td><td>${esc(e.notes)}</td></tr>`).join('');
+  const bagRows = hv.hunt_bag.map(b => `<tr><td>${fmtDate(b.date)}</td><td>${esc(b.species)}</td><td>${b.count}</td><td>${esc(b.shooter)}</td><td></td><td>Drückjagd: ${esc(b.hunt_title)}</td></tr>`).join('');
+  const quota = quotaRows(hv);
+  openPrint(`Streckenbuch ${hv.season}`, `<h1>Streckenbuch Jagdjahr ${esc(hv.season)}</h1><div class="muted">${esc(state.revier.name)} · ${fmtDate(hv.from)} bis ${fmtDate(hv.to)}</div>
+    <h2>Abschussplan</h2><table><tr><th>Wildart</th><th>Soll</th><th>Ist</th><th>Erfüllung</th></tr>${quota.map(q => `<tr><td>${esc(q.species)}</td><td>${q.target}</td><td>${q.actual}</td><td>${q.target ? Math.round(q.actual / q.target * 100) + ' %' : '–'}</td></tr>`).join('')}</table>
+    <h2>Einzelstrecke</h2><table><tr><th>Datum</th><th>Wildart</th><th>Stück</th><th>Erleger</th><th>kg</th><th>Bemerkung</th></tr>${rows + bagRows || '<tr><td colspan="6">Keine Einträge</td></tr>'}</table>
+    <div class="sig"><div>Jagdausübungsberechtigter</div><div>Datum, Unterschrift</div></div>`);
+}
+function printIncident(i) {
+  openPrint(`${i.kind === 'wildschaden' ? 'Wildschaden' : 'Wildunfall'} ${fmtDate(i.happened_at)}`, `<h1>${i.kind === 'wildschaden' ? 'Wildschaden-Dokumentation' : 'Wildunfall-Protokoll'}</h1><div class="muted">${esc(state.revier.name)}</div>
+    <table><tr><th>Datum / Zeit</th><td>${fmtDT(i.happened_at)}</td></tr><tr><th>Wildart</th><td>${esc(i.species || '–')}</td></tr><tr><th>Position</th><td>${i.lat.toFixed(5)}, ${i.lng.toFixed(5)}</td></tr>
+    ${i.kind === 'wildschaden' ? `<tr><th>Kultur</th><td>${esc(i.crop || '–')}</td></tr><tr><th>Landwirt</th><td>${esc(i.farmer || '–')}</td></tr><tr><th>Fläche</th><td>${i.area_ha ? i.area_ha + ' ha' : '–'}</td></tr>` : `<tr><th>Straße</th><td>${esc(i.road || '–')}</td></tr><tr><th>Polizei-Aktenzeichen</th><td>${esc(i.police_ref || '–')}</td></tr>`}
+    <tr><th>Status</th><td>${esc(i.status)}</td></tr><tr><th>Gemeldet von</th><td>${esc(i.user_name || '')}</td></tr><tr><th>Beschreibung</th><td>${esc(i.note || '–')}</td></tr></table>
+    <div id="pics"></div><div class="sig"><div>Jagdausübungsberechtigter</div><div>${i.kind === 'wildschaden' ? 'Landwirt / Geschädigter' : 'Datum, Unterschrift'}</div></div>`);
+}
+function quotaRows(hv) {
+  const counts = {};
+  for (const e of hv.entries) counts[e.species] = (counts[e.species] || 0) + e.count;
+  for (const b of hv.hunt_bag) counts[b.species] = (counts[b.species] || 0) + b.count;
+  const rows = hv.quota.map(q => ({ ...q, actual: counts[q.species] || 0 }));
+  for (const [sp, n] of Object.entries(counts)) if (!rows.find(r => r.species === sp)) rows.push({ species: sp, target: 0, actual: n });
+  return rows;
+}
+
+// Unterseiten
+function renderMehr() {
+  const page = state.mehrPage;
+  $('#mehr-hub').classList.toggle('hidden', !!page); $('#mehr-page').classList.toggle('hidden', !page);
+  $$('#mehr-hub .hub button').forEach(b => b.onclick = () => { location.hash = 'mehr-' + b.dataset.page; });
+  if (!page) return;
+  const back = `<button class="back" id="mehr-back">← Revierbuch</button>`;
+  const render = { strecke: pageStrecke, arbeiten: pageArbeiten, kirrungen: pageKirrungen, vorfaelle: pageVorfaelle, kontakte: pageKontakte, jagdzeiten: pageJagdzeiten, offline: pageOffline }[page];
+  $('#mehr-page').innerHTML = back + (render ? render() : '<p class="muted">Unbekannte Seite.</p>');
+  $('#mehr-back').onclick = () => { location.hash = 'mehr'; };
+  const bind = { strecke: bindStrecke, arbeiten: bindArbeiten, kirrungen: bindKirrungen, vorfaelle: bindVorfaelle, kontakte: bindKontakte, jagdzeiten: bindJagdzeiten, offline: bindOffline }[page];
+  bind?.($('#mehr-page'));
+}
+const act2 = async fn => { try { await fn(); } catch (e) { toast(e.message, 'error'); } };
+
+// --- Streckenbuch & Abschussplan ---
+function pageStrecke() {
+  const hv = state.harvest;
+  if (!hv) { loadHarvest(); return '<p class="muted">Lade …</p>'; }
+  const rows = quotaRows(hv);
+  const yearFrac = Math.min(1, Math.max(0, (Date.now() - new Date(hv.from).getTime()) / (new Date(hv.to).getTime() - new Date(hv.from).getTime())));
+  const prev = `${Number(hv.season.slice(0, 4)) - 1}/${String(Number(hv.season.slice(0, 4))).slice(2)}`, next = `${Number(hv.season.slice(0, 4)) + 1}/${String(Number(hv.season.slice(0, 4)) + 2).slice(2)}`;
+  return `<div class="row" style="justify-content:space-between"><h2 style="margin:0">Streckenbuch ${esc(hv.season)}</h2><div class="row"><button class="btn sm" data-season="${prev}">◀</button><button class="btn sm" data-season="${next}">▶</button><button class="btn sm" id="hv-print">Drucken / PDF</button></div></div>
+    <div class="card"><h2>Abschussplan</h2>
+      ${rows.length ? rows.map(q => { const pct = q.target ? Math.min(100, Math.round(q.actual / q.target * 100)) : 0; const cls = !q.target ? '' : q.actual >= q.target ? '' : pct / 100 < yearFrac - 0.25 ? 'danger' : pct / 100 < yearFrac ? 'warn' : ''; return `
+        <div style="margin-bottom:.5rem"><div class="row" style="justify-content:space-between"><b>${esc(q.species)}</b><span>${q.actual} / ${q.target || '–'}${q.target ? ` (${pct} %)` : ''}</span></div><div class="bar ${cls}"><i style="width:${pct}%"></i></div></div>`; }).join('') : '<p class="muted small">Noch kein Abschussplan hinterlegt.</p>'}
+      <p class="muted small">Jagdjahr ${fmtDate(hv.from)} bis ${fmtDate(hv.to)}, ${Math.round(yearFrac * 100)} % vergangen. Gelb: hinter der Zeit, rot: deutlich hinter der Zeit.</p>
+      ${state.me.is_admin ? `<details><summary>Abschussplan bearbeiten (Admin)</summary><div id="quota-edit">${(state.seasons.map(x => x.species)).map(sp => { const q = hv.quota.find(x => x.species === sp); return `<div class="row" style="margin:.3rem 0"><span style="flex:1">${esc(sp)}</span><input type="number" min="0" data-quota="${esc(sp)}" value="${q?.target ?? ''}" style="width:90px;margin:0"></div>`; }).join('')}</div><button class="btn primary" id="quota-save">Abschussplan speichern</button></details>` : ''}
+    </div>
+    <div class="card"><h2>Strecke eintragen</h2>
+      <div class="inline-form"><label>Wildart<select id="hv-species">${speciesOptions()}</select></label><label>Stück<input id="hv-count" type="number" min="1" value="1"></label>
+        <label>Datum<input id="hv-date" type="date" value="${new Date().toISOString().slice(0, 10)}"></label><label>Erleger<input id="hv-shooter" value="${esc(state.me.name)}" maxlength="80"></label>
+        <label>Gewicht kg<input id="hv-weight" type="number" step="0.1" min="0"></label><label>Bemerkung<input id="hv-notes" maxlength="500" placeholder="Ort, Klasse, Besonderheiten"></label>
+        <label><input type="checkbox" id="hv-pos" style="width:auto;margin-right:.4rem">Standort speichern</label><button class="btn primary" id="hv-add">Eintragen</button></div>
+    </div>
+    <div class="card"><h2>Einträge (${hv.entries.length + hv.hunt_bag.length})</h2>
+      <div class="table-wrap"><table class="table"><tr><th>Datum</th><th>Wildart</th><th>Stück</th><th>Erleger</th><th>kg</th><th></th></tr>
+      ${hv.entries.map(e => `<tr><td>${fmtDate(e.date)}</td><td><b>${esc(e.species)}</b>${e.notes ? `<div class="muted small">${esc(e.notes)}</div>` : ''}</td><td>${e.count}</td><td>${esc(e.shooter)}</td><td>${e.weight_kg ?? ''}</td><td>${e.user_id === state.me.id || state.me.is_admin ? `<button class="btn sm" data-del-hv="${e.id}">✕</button>` : ''}</td></tr>`).join('')}
+      ${hv.hunt_bag.map(b => `<tr><td>${fmtDate(b.date)}</td><td><b>${esc(b.species)}</b><div class="muted small">Jagd: ${esc(b.hunt_title)}</div></td><td>${b.count}</td><td>${esc(b.shooter)}</td><td></td><td></td></tr>`).join('')}
+      </table></div></div>`;
+}
+function bindStrecke(root) {
+  $$('[data-season]', root).forEach(b => b.onclick = () => loadHarvest(b.dataset.season));
+  $('#hv-print', root)?.addEventListener('click', () => printHarvest(state.harvest));
+  $('#quota-save', root)?.addEventListener('click', () => act2(async () => { await api('/quota', { method: 'PUT', body: { season: state.harvest.season, quota: $$('[data-quota]', root).map(i => ({ species: i.dataset.quota, target: i.value })) } }); toast('Abschussplan gespeichert'); }));
+  $('#hv-add', root)?.addEventListener('click', () => act2(async () => {
+    const species = $('#hv-species', root).value, date = $('#hv-date', root).value;
+    if (!seasonConfirm(species, date)) return;
+    const body = { species, count: $('#hv-count', root).value, date, shooter: $('#hv-shooter', root).value, weight_kg: $('#hv-weight', root).value || null, notes: $('#hv-notes', root).value };
+    if ($('#hv-pos', root).checked && navigator.geolocation) await new Promise(r => navigator.geolocation.getCurrentPosition(p => { body.lat = p.coords.latitude; body.lng = p.coords.longitude; r(); }, () => r(), { timeout: 6000 }));
+    await api('/harvest', { body }); toast('Strecke eingetragen – Waidmannsheil!');
+  }));
+  $$('[data-del-hv]', root).forEach(b => b.onclick = () => confirm('Eintrag löschen?') && act2(() => api('/harvest/' + b.dataset.delHv, { method: 'DELETE' })));
+}
+
+// --- Revierarbeiten ---
+const TASK_KINDS = { kanzelpruefung: 'Kanzelprüfung', freischneiden: 'Freischneiden', reparatur: 'Reparatur', kirrung: 'Kirrung anlegen / pflegen', wegearbeit: 'Wegearbeit', sonstiges: 'Sonstiges' };
+function pageArbeiten() {
+  const open = state.tasks.filter(t => !t.done_at), done = state.tasks.filter(t => t.done_at);
+  const today = new Date().toISOString().slice(0, 10);
+  const stands = state.revier.features.filter(f => f.kind === 'kanzel');
+  const unchecked = stands.filter(f => checkAge(f) === null || checkAge(f) > 365);
+  const item = t => `<div class="task ${t.done_at ? 'done' : ''}" data-tid="${t.id}"><input type="checkbox" ${t.done_at ? 'checked' : ''}><span><b>${esc(t.title)}</b> <span class="role-tag">${TASK_KINDS[t.kind] || t.kind}</span><div class="muted small">${t.feature_name ? esc(t.feature_name) + ' · ' : ''}${t.assignee ? 'Zuständig: ' + esc(t.assignee) + ' · ' : ''}${t.due_date ? `<span class="${!t.done_at && t.due_date < today ? 'season-closed' : ''}">fällig ${fmtDate(t.due_date)}</span>` : ''}${t.done_at ? ` · erledigt ${fmtDate(t.done_at)}${t.done_by_name ? ' von ' + esc(t.done_by_name) : ''}` : ''}${t.notes ? '<br>' + esc(t.notes) : ''}</div></span><button class="btn sm" data-del-task2="${t.id}">✕</button></div>`;
+  return `<h2>Revierarbeiten</h2>
+    ${unchecked.length ? `<div class="hunt-tip">⚠️ Standsicherheitsprüfung fällig (älter als ein Jahr oder nie dokumentiert): ${unchecked.map(f => esc(f.name)).join(', ')}. Über das Kanzel-Popup „Prüfung erledigt“ dokumentieren.</div>` : '<div class="hunt-tip">✓ Alle Kanzeln innerhalb des letzten Jahres geprüft.</div>'}
+    <div class="card"><h2>Offen (${open.length})</h2>${open.map(item).join('') || '<p class="muted small">Nichts offen.</p>'}
+      <div class="inline-form"><label>Neue Arbeit<input id="tk-title" maxlength="160" placeholder="z. B. Leiter Kanzel Bachtal erneuern"></label><label>Art<select id="tk-kind">${Object.entries(TASK_KINDS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
+        <label>Objekt<select id="tk-feature"><option value="">–</option>${state.revier.features.map(f => `<option value="${f.id}">${esc(f.name)}</option>`).join('')}</select></label><label>Zuständig<input id="tk-who" maxlength="80" list="user-list"><datalist id="user-list">${state.users.map(u => `<option value="${esc(u.name)}">`).join('')}</datalist></label>
+        <label>Fällig<input id="tk-due" type="date"></label><label>Notiz<input id="tk-notes" maxlength="1000"></label><button class="btn primary" id="tk-add">Anlegen</button></div></div>
+    <div class="card"><h2>Erledigt (${done.length})</h2>${done.map(item).join('') || '<p class="muted small">Noch nichts erledigt.</p>'}</div>`;
+}
+function bindArbeiten(root) {
+  $$('.task[data-tid] input[type=checkbox]', root).forEach(c => c.onchange = () => act2(() => api('/tasks/' + c.closest('.task').dataset.tid, { method: 'PUT', body: { done: c.checked } })));
+  $$('[data-del-task2]', root).forEach(b => b.onclick = () => confirm('Arbeit löschen?') && act2(() => api('/tasks/' + b.dataset.delTask2, { method: 'DELETE' })));
+  $('#tk-add', root)?.addEventListener('click', () => act2(async () => { await api('/tasks', { body: { title: $('#tk-title', root).value, kind: $('#tk-kind', root).value, feature_id: $('#tk-feature', root).value || null, assignee: $('#tk-who', root).value, due_date: $('#tk-due', root).value || null, notes: $('#tk-notes', root).value } }); toast('Angelegt'); }));
+}
+
+// --- Kirrungen & Kameras ---
+function pageKirrungen() {
+  const list = state.revier.features.filter(f => f.kind === 'kirrung' || f.kind === 'kamera');
+  return `<h2>Kirrungen &amp; Wildkameras</h2>
+    <div class="card">${list.length ? list.map(f => `<div class="person" style="border-left-color:${serviceOverdue(f) ? 'var(--warn)' : 'var(--ok)'}" data-fid="${f.id}">
+      <span class="ico ico-${f.kind}" style="width:22px;height:22px;background:var(--oak)"></span>
+      <div class="who"><b>${esc(f.name)}</b><span>${f.interval_days ? `alle ${f.interval_days} Tage · zuletzt ${f.last_service ? ageText(f.last_service) : 'nie'}${serviceOverdue(f) ? ' · <b class="season-closed">fällig</b>' : ''}` : 'kein Intervall gesetzt'}</span></div>
+      <div class="row" style="flex:0 0 auto">${f.kind === 'kirrung' ? `<button class="btn sm" data-log2="beschickt">Beschickt</button>` : `<button class="btn sm" data-log2="karte">Karte</button><button class="btn sm" data-log2="batterie">Batterie</button>`}<button class="btn sm" data-log2="kontrolle">Kontrolle</button><button class="btn sm" data-hist="${f.id}">Verlauf</button></div></div>`).join('') : '<p class="muted small">Keine Kirrungen oder Kameras angelegt.</p>'}
+    <p class="muted small">Intervall je Objekt im Karten-Popup unter „Bearbeiten“ setzen. Fällige Objekte sind auf der Karte gelb umrandet.</p></div><div id="log-hist"></div>`;
+}
+function bindKirrungen(root) {
+  $$('[data-log2]', root).forEach(b => b.onclick = () => act2(async () => { await api(`/features/${b.closest('[data-fid]').dataset.fid}/logs`, { body: { kind: b.dataset.log2 } }); toast('Eingetragen'); }));
+  $$('[data-hist]', root).forEach(b => b.onclick = () => act2(async () => {
+    const logs = await api(`/features/${b.dataset.hist}/logs`); const f = state.revier.features.find(x => x.id === Number(b.dataset.hist));
+    const names = { beschickt: 'Beschickt', karte: 'Karte getauscht', batterie: 'Batterie gewechselt', kontrolle: 'Kontrolle', notiz: 'Notiz' };
+    $('#log-hist', root).innerHTML = `<div class="card"><h2>Verlauf ${esc(f?.name || '')}</h2>${logs.map(l => `<div class="history"><div class="item"><div><b>${names[l.kind] || l.kind}</b> ${l.note ? '– ' + esc(l.note) : ''}<div class="muted small">${fmtDT(l.created_at)} · ${esc(l.user_name || '')}</div></div></div></div>`).join('') || '<p class="muted small">Noch keine Einträge.</p>'}</div>`;
+  }));
+}
+
+// --- Wildunfälle & Wildschäden ---
+const INCIDENT_STATUS = { gemeldet: ['Gemeldet', 'warn'], besichtigt: ['Besichtigt', 'warn'], reguliert: ['Reguliert', 'ok'], erledigt: ['Erledigt', ''] };
+function pageVorfaelle() {
+  const row = i => `<div class="person" data-iid="${i.id}" style="border-left-color:${i.kind === 'wildschaden' ? '#b8862b' : '#2f4f4f'};cursor:pointer"><span class="incident ${i.kind}" style="width:28px;height:28px"><span class="ico ico-${i.kind === 'wildschaden' ? 'schaden' : 'unfall'}" style="width:16px;height:16px"></span></span>
+    <div class="who"><b>${i.kind === 'wildschaden' ? 'Wildschaden' : 'Wildunfall'}${i.species ? ' · ' + esc(i.species) : ''} <span class="status-tag ${INCIDENT_STATUS[i.status]?.[1] || ''}">${INCIDENT_STATUS[i.status]?.[0] || i.status}</span></b><span>${fmtDT(i.happened_at)}${i.road ? ' · ' + esc(i.road) : ''}${i.crop ? ' · ' + esc(i.crop) : ''}${i.farmer ? ' · ' + esc(i.farmer) : ''}${i.area_ha ? ' · ' + i.area_ha + ' ha' : ''}${i.photo_count ? ' · ' + i.photo_count + ' Foto(s)' : ''}</span></div>
+    <button class="btn sm" data-print-i="${i.id}">PDF</button></div>`;
+  return `<h2>Wildunfälle &amp; Wildschäden</h2><div class="card"><p class="muted small">Neue Meldungen über die Kartenwerkzeuge „Unfall“ und „Schaden“. Antippen springt auf die Karte.</p>${state.incidents.map(row).join('') || '<p class="muted small">Keine Vorfälle.</p>'}</div>`;
+}
+function bindVorfaelle(root) {
+  $$('[data-iid]', root).forEach(el => el.onclick = e => { if (e.target.closest('button')) return; const i = state.incidents.find(x => x.id === Number(el.dataset.iid)); location.hash = 'karte'; setTimeout(() => map.setView([i.lat, i.lng], 16), 100); });
+  $$('[data-print-i]', root).forEach(b => b.onclick = () => printIncident(state.incidents.find(x => x.id === Number(b.dataset.printI))));
+}
+function renderIncidentMarkers() {
+  if (!map) return;
+  incidentLayer.clearLayers();
+  for (const i of state.incidents) {
+    const m = L.marker([i.lat, i.lng], { zIndexOffset: 600, draggable: i.user_id === state.me.id || !!state.me.is_admin,
+      icon: L.divIcon({ className: '', html: `<div class="incident ${i.kind} ${i.status}"><span class="ico ico-${i.kind === 'wildschaden' ? 'schaden' : 'unfall'}"></span></div>`, iconSize: [32, 32], iconAnchor: [16, 16], popupAnchor: [0, -16] }) });
+    m.bindTooltip(`${i.kind === 'wildschaden' ? 'Wildschaden' : 'Wildunfall'}${i.species ? ' ' + i.species : ''} · ${ageText(i.happened_at)}`);
+    m.on('dragend', async () => { const p = m.getLatLng(); await api('/incidents/' + i.id, { method: 'PUT', body: { lat: p.lat, lng: p.lng } }); });
+    m.on('click', () => { if (markerClickDuringPlacement(m.getLatLng())) return; openIncidentPopup(m, i); });
+    incidentLayer.addLayer(m);
+  }
+}
+async function openIncidentPopup(marker, i) {
+  const mine = i.user_id === state.me.id || state.me.is_admin;
+  marker.bindPopup(`<h3>${i.kind === 'wildschaden' ? 'Wildschaden' : 'Wildunfall'} <span class="status-tag ${INCIDENT_STATUS[i.status]?.[1] || ''}">${INCIDENT_STATUS[i.status]?.[0] || i.status}</span></h3>
+    <div>${fmtDT(i.happened_at)}${i.species ? ' · ' + esc(i.species) : ''} · ${esc(i.user_name || '')}</div>
+    <div class="small">${i.kind === 'wildschaden' ? `${i.crop ? 'Kultur: ' + esc(i.crop) : ''}${i.farmer ? ' · ' + esc(i.farmer) : ''}${i.area_ha ? ' · ' + i.area_ha + ' ha' : ''}` : `${i.road ? esc(i.road) : ''}${i.police_ref ? ' · Az. ' + esc(i.police_ref) : ''}`}</div>
+    ${i.note ? `<div class="muted small">„${esc(i.note)}“</div>` : ''}<div class="photo-grid" id="inc-photos-${i.id}"></div>
+    <div class="row"><select data-status style="width:auto;margin:0;padding:.3rem">${Object.entries(INCIDENT_STATUS).map(([k, [v]]) => `<option value="${k}" ${k === i.status ? 'selected' : ''}>${v}</option>`).join('')}</select>
+      <button class="btn sm" data-act="edit">Bearbeiten</button><button class="btn sm" data-act="print">PDF</button>${mine ? `<button class="btn sm danger" data-act="del">Löschen</button>` : ''}</div>`, { maxWidth: 320 }).openPopup();
+  const pop = marker.getPopup().getElement();
+  $('[data-status]', pop).onchange = e => act2(async () => { await api('/incidents/' + i.id, { method: 'PUT', body: { status: e.target.value } }); map.closePopup(); });
+  $('[data-act="edit"]', pop)?.addEventListener('click', () => { map.closePopup(); incidentDialog(i); });
+  $('[data-act="print"]', pop)?.addEventListener('click', () => printIncident(i));
+  $('[data-act="del"]', pop)?.addEventListener('click', async () => { if (confirm('Meldung löschen?')) { map.closePopup(); await api('/incidents/' + i.id, { method: 'DELETE' }); } });
+  if (i.photo_count) { try { const photos = await api(`/incidents/${i.id}/photos`); const grid = $(`#inc-photos-${i.id}`); if (grid) { grid.innerHTML = photos.map(p => `<span class="ph"><img src="${p.data}" alt="Foto"></span>`).join(''); $$('img', grid).forEach(img => img.onclick = () => openDialog(`<img class="photo-full" src="${img.src}"><div class="row" style="margin-top:.6rem"><button class="btn" data-close>Schließen</button></div>`)); } } catch {} }
+}
+function incidentDialog(i) {
+  const isNew = !i.id, isDamage = i.kind === 'wildschaden';
+  const when = i.happened_at ? new Date(i.happened_at) : new Date();
+  let photos = [];
+  openDialog(`<h2>${isDamage ? 'Wildschaden dokumentieren' : 'Wildunfall melden'}</h2>
+    <label>Wildart<input id="in-species" list="species-list2" maxlength="80" value="${esc(i.species || '')}"><datalist id="species-list2">${SPECIES.map(x => `<option value="${x}">`).join('')}</datalist></label>
+    <label>Zeitpunkt<input type="datetime-local" id="in-time" value="${toLocalInput(when)}"></label>
+    ${isDamage ? `<label>Kultur / Fläche<input id="in-crop" maxlength="80" value="${esc(i.crop || '')}" placeholder="z. B. Mais, Grünland, Winterweizen"></label>
+      <label>Landwirt / Geschädigter<input id="in-farmer" maxlength="120" value="${esc(i.farmer || '')}"></label>
+      <label>Geschädigte Fläche in ha (geschätzt)<input id="in-area" type="number" step="0.01" min="0" value="${i.area_ha ?? ''}"></label>`
+    : `<label>Straße / Stelle<input id="in-road" maxlength="120" value="${esc(i.road || '')}" placeholder="z. B. K12 Höhe Abzweig Forsthaus"></label>
+      <label>Polizei-Aktenzeichen<input id="in-ref" maxlength="80" value="${esc(i.police_ref || '')}"></label>`}
+    <label>Beschreibung<textarea id="in-note" maxlength="1000">${esc(i.note || '')}</textarea></label>
+    <label>Fotos<input type="file" id="in-photos" accept="image/*" capture="environment" multiple></label><div class="photo-grid" id="in-preview"></div>
+    <div class="row"><button class="btn primary" id="in-save">${isNew ? 'Melden' : 'Speichern'}</button><button class="btn" data-close>Abbrechen</button></div>
+    ${isNew ? '<p class="muted small">Alle Nutzer erhalten eine Push-Nachricht. Aus der Meldung lässt sich ein PDF für Polizei, Versicherung oder Landwirt erzeugen.</p>' : ''}`, d => {
+    $('#in-photos', d).onchange = async () => {
+      for (const f of [...$('#in-photos', d).files].slice(0, 5 - photos.length)) { try { photos.push(await compressImage(f)); } catch (e) { toast(e.message, 'error'); } }
+      $('#in-preview', d).innerHTML = photos.map((p, k) => `<span class="ph"><img src="${p}" alt=""><button data-i="${k}">✕</button></span>`).join('');
+      $$('#in-preview button', d).forEach(b => b.onclick = () => { photos.splice(Number(b.dataset.i), 1); $('#in-photos', d).onchange(); });
+    };
+    $('#in-save', d).onclick = () => act2(async () => {
+      const body = { kind: i.kind, species: $('#in-species', d).value, happened_at: new Date($('#in-time', d).value).toISOString(), note: $('#in-note', d).value, lat: i.lat, lng: i.lng, photos,
+        ...(isDamage ? { crop: $('#in-crop', d).value, farmer: $('#in-farmer', d).value, area_ha: $('#in-area', d).value || null } : { road: $('#in-road', d).value, police_ref: $('#in-ref', d).value }) };
+      $('#in-save', d).disabled = true;
+      if (isNew) await api('/incidents', { body }); else await api('/incidents/' + i.id, { method: 'PUT', body });
+      closeDialog(); toast(isNew ? 'Gemeldet' : 'Gespeichert');
+    });
+  });
+}
+
+// --- Kontakte ---
+const CONTACT_ROLES = { nachsuche: 'Nachsuchengespann', tierarzt: 'Tierarzt', polizei: 'Polizei', forst: 'Forst', landwirt: 'Landwirt', wildhandel: 'Wildhandel', jagdbehoerde: 'Jagdbehörde', sonstiges: 'Sonstiges' };
+function pageKontakte() {
+  return `<h2>Kontakte</h2><div class="card">${state.contacts.length ? state.contacts.map(c => `<div class="contact" data-cid="${c.id}"><div class="who"><b>${esc(c.name)}</b> <span class="role-tag">${CONTACT_ROLES[c.role] || c.role}</span>${c.note ? `<div class="muted small">${esc(c.note)}</div>` : ''}</div>
+      ${c.phone ? `<a class="btn sm primary" href="tel:${esc(c.phone.replace(/\s+/g, ''))}">📞 ${esc(c.phone)}</a>` : ''}<button class="btn sm" data-edit-c="${c.id}">✎</button></div>`).join('') : '<p class="muted small">Noch keine Kontakte.</p>'}
+    <p class="muted small">Nachsuchengespanne erscheinen direkt im Anschuss-Popup zum Anrufen.</p>
+    <div class="inline-form"><label>Name<input id="c-name" maxlength="80"></label><label>Rolle<select id="c-role">${Object.entries(CONTACT_ROLES).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label><label>Telefon<input id="c-phone" maxlength="40" type="tel"></label><label>Notiz<input id="c-note" maxlength="300"></label><button class="btn primary" id="c-add">Hinzufügen</button></div></div>`;
+}
+function bindKontakte(root) {
+  $('#c-add', root)?.addEventListener('click', () => act2(async () => { await api('/contacts', { body: { name: $('#c-name', root).value, role: $('#c-role', root).value, phone: $('#c-phone', root).value, note: $('#c-note', root).value } }); toast('Kontakt gespeichert'); }));
+  $$('[data-edit-c]', root).forEach(b => b.onclick = () => {
+    const c = state.contacts.find(x => x.id === Number(b.dataset.editC));
+    openDialog(`<h2>Kontakt bearbeiten</h2><label>Name<input id="ce-name" value="${esc(c.name)}"></label><label>Rolle<select id="ce-role">${Object.entries(CONTACT_ROLES).map(([k, v]) => `<option value="${k}" ${k === c.role ? 'selected' : ''}>${v}</option>`).join('')}</select></label><label>Telefon<input id="ce-phone" value="${esc(c.phone)}"></label><label>Notiz<input id="ce-note" value="${esc(c.note)}"></label>
+      <div class="row"><button class="btn primary" id="ce-save">Speichern</button><button class="btn danger" id="ce-del">Löschen</button><button class="btn" data-close>Abbrechen</button></div>`, d => {
+      $('#ce-save', d).onclick = () => act2(async () => { await api('/contacts/' + c.id, { method: 'PUT', body: { name: $('#ce-name', d).value, role: $('#ce-role', d).value, phone: $('#ce-phone', d).value, note: $('#ce-note', d).value } }); closeDialog(); });
+      $('#ce-del', d).onclick = () => act2(async () => { if (confirm('Kontakt löschen?')) { await api('/contacts/' + c.id, { method: 'DELETE' }); closeDialog(); } });
+    });
+  });
+}
+
+// --- Jagdzeiten ---
+function pageJagdzeiten() {
+  const today = new Date();
+  return `<h2>Jagdzeiten</h2><div class="card"><p class="muted small">${esc(state.seasonsNote)}</p>
+    <div class="table-wrap"><table class="table"><tr><th>Wildart</th><th>Jagdzeit</th><th>Heute</th>${state.me.is_admin ? '<th></th>' : ''}</tr>
+    ${state.seasons.map((x, k) => `<tr data-k="${k}"><td>${state.me.is_admin ? `<input data-sp value="${esc(x.species)}">` : `<b>${esc(x.species)}</b>`}</td><td>${state.me.is_admin ? `<input data-from value="${esc(x.from)}" placeholder="MM-TT" style="width:70px"> – <input data-to value="${esc(x.to)}" placeholder="MM-TT" style="width:70px">` : (x.from ? `${fmtMd(x.from)} – ${fmtMd(x.to)}` : 'ganzjährig')}</td><td class="${inSeason(x, today) ? 'season-ok' : 'season-closed'}">${inSeason(x, today) ? 'offen' : 'Schonzeit'}</td>${state.me.is_admin ? `<td><button class="btn sm" data-del-season="${k}">✕</button></td>` : ''}</tr>`).join('')}
+    </table></div>
+    ${state.me.is_admin ? `<div class="row" style="margin-top:.6rem"><button class="btn sm" id="season-add">+ Wildart</button><button class="btn primary" id="season-save">Jagdzeiten speichern</button></div><label>Hinweistext<input id="season-note" value="${esc(state.seasonsNote)}" maxlength="300"></label><p class="muted small">Format Monat-Tag, z. B. 05-01 für 1. Mai. Beide Felder leer = ganzjährig.</p>` : '<p class="muted small">Nur der Admin kann die Zeiten anpassen.</p>'}</div>`;
+}
+function bindJagdzeiten(root) {
+  const collect = () => $$('tr[data-k]', root).map(tr => ({ species: $('[data-sp]', tr).value, from: $('[data-from]', tr).value.trim(), to: $('[data-to]', tr).value.trim() }));
+  $('#season-save', root)?.addEventListener('click', () => act2(async () => { await api('/seasons', { method: 'PUT', body: { seasons: collect(), note: $('#season-note', root).value } }); await loadSeasons(); renderMehr(); toast('Jagdzeiten gespeichert'); }));
+  $('#season-add', root)?.addEventListener('click', () => { state.seasons = collect().concat([{ species: 'Neue Wildart', from: '', to: '' }]); renderMehr(); });
+  $$('[data-del-season]', root).forEach(b => b.onclick = () => { state.seasons = collect(); state.seasons.splice(Number(b.dataset.delSeason), 1); renderMehr(); });
+}
+
+// --- Offline-Karte ---
+function pageOffline() {
+  return `<h2>Offline-Karte</h2><div class="card"><p>Speichert die Kartenkacheln des Reviers (aktuelle Kartenart, Zoomstufen 12 bis 16) auf diesem Gerät, damit die Karte auch ohne Empfang angezeigt wird. Eigene Marker, Fährten und Grenzen werden ohnehin beim letzten Laden gemerkt.</p>
+    <p class="muted small" id="offline-status">Prüfe Speicher …</p>
+    <div class="row"><button class="btn primary" id="offline-save">Revier offline speichern</button><button class="btn danger" id="offline-clear">Gespeicherte Kacheln löschen</button></div>
+    <p class="muted small">Grundlage ist die Reviergrenze (sonst der aktuelle Kartenausschnitt). Maximal 1500 Kacheln, damit die Kartenserver nicht übermäßig belastet werden. Dauert je nach Verbindung ein bis drei Minuten.</p></div>`;
+}
+async function tileCacheCount() { try { const c = await caches.open('revier-tiles'); return (await c.keys()).length; } catch { return 0; } }
+function bindOffline(root) {
+  const status = $('#offline-status', root);
+  tileCacheCount().then(n => { status.textContent = n ? `${n} Kacheln gespeichert.` : 'Noch keine Kacheln gespeichert.'; });
+  $('#offline-clear', root).onclick = async () => { await caches.delete('revier-tiles'); status.textContent = 'Gelöscht.'; };
+  $('#offline-save', root).onclick = async () => {
+    if (!('caches' in window)) return toast('Offline-Speicher wird von diesem Browser nicht unterstützt', 'error');
+    const b = boundaryLayer?.getBounds().isValid() ? boundaryLayer.getBounds().pad(0.1) : map.getBounds();
+    const key = localStorage.getItem('layer') || 'topo';
+    const tpl = { topo: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', osm: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', sat: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}' }[key];
+    const subs = ['a', 'b', 'c'];
+    const urls = [];
+    for (let z = 12; z <= 16; z++) {
+      const t = ll => ({ x: Math.floor((ll.lng + 180) / 360 * 2 ** z), y: Math.floor((1 - Math.log(Math.tan(ll.lat * Math.PI / 180) + 1 / Math.cos(ll.lat * Math.PI / 180)) / Math.PI) / 2 * 2 ** z) });
+      const a = t(b.getNorthWest()), c = t(b.getSouthEast());
+      for (let x = a.x; x <= c.x; x++) for (let y = a.y; y <= c.y; y++) urls.push(tpl.replace('{s}', subs[(x + y) % 3]).replace('{z}', z).replace('{x}', x).replace('{y}', y));
+    }
+    if (urls.length > 1500) { toast(`Zu groß (${urls.length} Kacheln). Bitte Grenze enger ziehen oder weiter hineinzoomen.`, 'error'); return; }
+    const cache = await caches.open('revier-tiles'); let done = 0, failed = 0;
+    status.textContent = `Lade 0 / ${urls.length} …`;
+    const worker = async () => { while (urls.length) { const u = urls.shift(); try { if (!(await cache.match(u))) { const r = await fetch(u, { mode: 'no-cors' }); await cache.put(u, r); } done++; } catch { failed++; } if ((done + failed) % 20 === 0) status.textContent = `Lade ${done + failed} / ${done + failed + urls.length} …`; } };
+    await Promise.all([worker(), worker(), worker(), worker()]);
+    status.textContent = `Fertig: ${done} Kacheln gespeichert${failed ? `, ${failed} fehlgeschlagen` : ''}.`; toast('Offline-Karte gespeichert');
+  };
 }
 
 // ---------- Benachrichtigungen ----------

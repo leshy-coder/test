@@ -73,6 +73,8 @@
           <button class="tool" data-tool="kirrung" title="Kirrung setzen"><span class="ico ico-kirrung"></span>Kirrung</button>
           <button class="tool" data-tool="faehrte" title="Fährte / Wildbeobachtung melden"><span class="ico ico-faehrte"></span>Fährte</button>
           <button class="tool" data-tool="anschuss" title="Anschuss markieren (Nachsuche)"><span class="ico ico-anschuss"></span>Anschuss</button>
+          <button class="tool" data-tool="unfall" title="Wildunfall melden"><span class="ico ico-unfall"></span>Unfall</button>
+          <button class="tool" data-tool="schaden" title="Wildschaden dokumentieren"><span class="ico ico-schaden"></span>Schaden</button>
           <button class="tool" data-tool="messen" title="Entfernung messen"><span class="ico ico-messen"></span>Messen</button>
           <button class="tool" data-tool="gebiet" title="Gebiet (z. B. Elsbruch) einzeichnen"><span class="ico ico-gebiet"></span>Gebiet</button>
           <button class="tool" data-tool="grenze" title="Reviergrenze zeichnen"><span class="ico ico-grenze"></span>Grenze</button>
@@ -155,6 +157,19 @@
     <!-- Einstellungen -->
     <section class="view hidden" id="view-mehr">
       <div class="content">
+        <div id="mehr-page" class="hidden"></div>
+        <div id="mehr-hub">
+        <h2 style="margin-bottom:.5rem">Revierbuch</h2>
+        <div class="hub">
+          <button data-page="strecke"><b>Streckenbuch</b><span>Abschussplan, Jagdjahr, Druck</span></button>
+          <button data-page="arbeiten"><b>Revierarbeiten</b><span>Kanzelprüfung, Freischneiden</span></button>
+          <button data-page="kirrungen"><b>Kirrungen &amp; Kameras</b><span>Beschickung, Kartentausch</span></button>
+          <button data-page="vorfaelle"><b>Wildunfälle &amp; Wildschäden</b><span>Dokumentation, Fotos</span></button>
+          <button data-page="kontakte"><b>Kontakte</b><span>Nachsuchengespann, Tierarzt, Polizei</span></button>
+          <button data-page="jagdzeiten"><b>Jagdzeiten</b><span>Schonzeiten je Wildart</span></button>
+          <button data-page="offline"><b>Offline-Karte</b><span>Kacheln fürs Revier speichern</span></button>
+        </div>
+        <h2 style="margin:1.2rem 0 .5rem">Einstellungen</h2>
         <div class="card">
           <h2>Revier</h2>
           <label>Reviername<input id="set-revier-name" maxlength="80"></label>
@@ -196,6 +211,7 @@
           <div id="admin-users"></div>
         </div>
         <p class="muted small center">RevierApp · Wetterdaten von Open-Meteo · Karten © OpenStreetMap-Mitwirkende</p>
+        </div>
       </div>
     </section>
   </main>

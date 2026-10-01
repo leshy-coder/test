@@ -115,7 +115,8 @@ export function createApp({ onChange = () => {} } = {}) {
       name: await getSetting('revier_name', 'Mein Revier'),
       center: await getSetting('center', { lat: 51.1657, lng: 10.4515, zoom: 6 }),
       boundaries: (await db.all('SELECT * FROM boundaries ORDER BY id')).map(b => ({ ...b, geojson: JSON.parse(b.geojson) })),
-      features: await db.all('SELECT * FROM features ORDER BY kind, name'),
+      features: await db.all(`SELECT f.*, (SELECT MAX(l.created_at) FROM feature_logs l WHERE l.feature_id = f.id AND l.kind IN ('beschickt','karte','kontrolle')) AS last_service,
+        (SELECT MAX(t.done_at) FROM tasks t WHERE t.feature_id = f.id AND t.kind = 'kanzelpruefung' AND t.done_at IS NOT NULL) AS last_check FROM features f ORDER BY f.kind, f.name`),
     });
   }));
   app.put('/api/revier/settings', requireAuth, wrap(async (req, res) => {
@@ -188,10 +189,24 @@ export function createApp({ onChange = () => {} } = {}) {
     const db = await getDb();
     const f = await db.get('SELECT * FROM features WHERE id = ?', [req.params.id]);
     if (!f) throw httpError(404, 'Nicht gefunden.');
-    await db.run('UPDATE features SET name = ?, notes = ?, lat = ?, lng = ?, kind = ? WHERE id = ?', [
+    const DIRS = ['N', 'NO', 'O', 'SO', 'S', 'SW', 'W', 'NW'];
+    await db.run('UPDATE features SET name = ?, notes = ?, lat = ?, lng = ?, kind = ?, interval_days = ?, wind_dirs = ? WHERE id = ?', [
       str(req.body.name ?? f.name, 80) || f.name, str(req.body.notes ?? f.notes, 1000), num(req.body.lat) ?? f.lat, num(req.body.lng) ?? f.lng,
-      KINDS.includes(req.body.kind) ? req.body.kind : f.kind, f.id]);
+      KINDS.includes(req.body.kind) ? req.body.kind : f.kind, 'interval_days' in req.body ? num(req.body.interval_days) : f.interval_days,
+      'wind_dirs' in req.body ? String(req.body.wind_dirs || '').split(',').map(x => x.trim().toUpperCase()).filter(x => DIRS.includes(x)).join(',') : f.wind_dirs, f.id]);
     await changed('revier'); res.json(await db.get('SELECT * FROM features WHERE id = ?', [f.id]));
+  }));
+  // Protokoll je Kirrung / Kamera / Kanzel (Beschickung, Kartentausch, Kontrolle)
+  app.get('/api/features/:id/logs', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    res.json(await db.all('SELECT l.*, u.name AS user_name FROM feature_logs l LEFT JOIN users u ON u.id = l.user_id WHERE l.feature_id = ? ORDER BY l.id DESC LIMIT 50', [req.params.id]));
+  }));
+  app.post('/api/features/:id/logs', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    if (!(await db.get('SELECT id FROM features WHERE id = ?', [req.params.id]))) throw httpError(404, 'Nicht gefunden.');
+    const kind = ['beschickt', 'karte', 'batterie', 'kontrolle', 'notiz'].includes(req.body.kind) ? req.body.kind : 'notiz';
+    await db.run('INSERT INTO feature_logs (feature_id, user_id, kind, note, created_at) VALUES (?, ?, ?, ?, ?)', [req.params.id, req.user.id, kind, str(req.body.note, 300), req.body.at ? new Date(req.body.at).toISOString() : now()]);
+    await changed('revier'); res.json({ ok: true });
   }));
   app.delete('/api/features/:id', requireAuth, wrap(async (req, res) => {
     const db = await getDb(); await db.run('DELETE FROM features WHERE id = ?', [req.params.id]);
@@ -379,6 +394,158 @@ export function createApp({ onChange = () => {} } = {}) {
     if (!canEditShot(sh, req.user)) throw httpError(403, 'Nur der Schütze oder der Admin kann das löschen.');
     await db.run('DELETE FROM shots WHERE id = ?', [sh.id]);
     await changed('shots'); res.json({ ok: true });
+  }));
+
+  // ---------- Jagdzeiten ----------
+  // Voreinstellung nach Bundesjagdzeitenverordnung; die Länder weichen ab, daher vom Admin änderbar. Format: [Von-MMTT, Bis-MMTT], leer = ganzjährig.
+  const DEFAULT_SEASONS = [
+    { species: 'Rehwild – Bock / Schmalreh', from: '05-01', to: '10-15' }, { species: 'Rehwild – Ricke / Kitz', from: '09-01', to: '01-31' },
+    { species: 'Rotwild – Hirsch / Alttier / Kalb', from: '08-01', to: '01-31' }, { species: 'Rotwild – Schmaltier / Schmalspießer', from: '06-01', to: '01-31' },
+    { species: 'Damwild – Hirsch / Alttier / Kalb', from: '09-01', to: '01-31' }, { species: 'Damwild – Schmaltier / Schmalspießer', from: '06-01', to: '01-31' },
+    { species: 'Schwarzwild – Bache / Keiler', from: '06-16', to: '01-31' }, { species: 'Schwarzwild – Frischling / Überläufer', from: '', to: '' },
+    { species: 'Muffelwild', from: '08-01', to: '01-31' }, { species: 'Fuchs – Altfuchs', from: '06-16', to: '02-28' }, { species: 'Fuchs – Jungfuchs', from: '', to: '' },
+    { species: 'Dachs', from: '08-01', to: '10-31' }, { species: 'Waschbär / Marderhund', from: '', to: '' }, { species: 'Feldhase', from: '10-01', to: '01-15' },
+    { species: 'Wildkaninchen', from: '10-01', to: '02-15' }, { species: 'Fasan', from: '10-01', to: '01-15' }, { species: 'Rebhuhn', from: '09-01', to: '12-15' },
+    { species: 'Stockente', from: '09-01', to: '01-15' }, { species: 'Graugans', from: '08-01', to: '01-15' }, { species: 'Ringeltaube', from: '11-01', to: '02-20' },
+  ];
+  app.get('/api/seasons', requireAuth, wrap(async (req, res) => res.json({ seasons: await getSetting('seasons', DEFAULT_SEASONS), note: await getSetting('seasons_note', 'Voreinstellung nach Bundesjagdzeitenverordnung. Bitte an das Landesrecht anpassen.') })));
+  app.put('/api/seasons', requireAuth, requireAdmin, wrap(async (req, res) => {
+    const list = (Array.isArray(req.body.seasons) ? req.body.seasons : []).map(x => ({ species: str(x.species, 80), from: /^\d{2}-\d{2}$/.test(x.from || '') ? x.from : '', to: /^\d{2}-\d{2}$/.test(x.to || '') ? x.to : '' })).filter(x => x.species).slice(0, 80);
+    await setSetting('seasons', list); if (req.body.note !== undefined) await setSetting('seasons_note', str(req.body.note, 300));
+    await changed('revier'); res.json({ ok: true });
+  }));
+
+  // ---------- Streckenbuch & Abschussplan ----------
+  const seasonOf = d => { const dt = new Date(d); const y = dt.getMonth() >= 3 ? dt.getFullYear() : dt.getFullYear() - 1; return `${y}/${String(y + 1).slice(2)}`; };
+  app.get('/api/harvest', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const season = str(req.query.season, 10) || seasonOf(new Date());
+    const y = Number(season.slice(0, 4)); const from = `${y}-04-01`, to = `${y + 1}-03-31`;
+    const rows = await db.all('SELECT h.*, u.name AS user_name FROM harvest h LEFT JOIN users u ON u.id = h.user_id WHERE h.date >= ? AND h.date <= ? ORDER BY h.date DESC, h.id DESC', [from, to]);
+    const bag = await db.all('SELECT b.*, hu.title AS hunt_title, hu.date FROM hunt_bag b JOIN hunts hu ON hu.id = b.hunt_id WHERE hu.date >= ? AND hu.date <= ?', [from, to]);
+    const quota = await db.all('SELECT * FROM quota WHERE season = ? ORDER BY species', [season]);
+    res.json({ season, from, to, entries: rows, hunt_bag: bag, quota });
+  }));
+  app.post('/api/harvest', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    if (!str(req.body.species, 80)) throw httpError(400, 'Wildart fehlt.');
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(req.body.date || '') ? req.body.date : new Date().toISOString().slice(0, 10);
+    const id = await db.insert('INSERT INTO harvest (user_id, species, count, date, shooter, weight_kg, lat, lng, hunt_id, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [req.user.id, str(req.body.species, 80), Math.max(1, Number(req.body.count) || 1), date, str(req.body.shooter, 80) || req.user.name, num(req.body.weight_kg), num(req.body.lat), num(req.body.lng), num(req.body.hunt_id), str(req.body.notes, 500), now()]);
+    await changed('harvest'); res.json({ id });
+  }));
+  app.delete('/api/harvest/:id', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const h = await db.get('SELECT * FROM harvest WHERE id = ?', [req.params.id]);
+    if (!h) throw httpError(404, 'Nicht gefunden.');
+    if (h.user_id !== req.user.id && !req.user.is_admin) throw httpError(403, 'Nur eigene Einträge oder Admin.');
+    await db.run('DELETE FROM harvest WHERE id = ?', [h.id]); await changed('harvest'); res.json({ ok: true });
+  }));
+  app.put('/api/quota', requireAuth, requireAdmin, wrap(async (req, res) => {
+    const db = await getDb();
+    const season = str(req.body.season, 10); if (!/^\d{4}\/\d{2}$/.test(season)) throw httpError(400, 'Jagdjahr im Format 2026/27.');
+    for (const q of (Array.isArray(req.body.quota) ? req.body.quota : []).slice(0, 60)) {
+      const sp = str(q.species, 80); if (!sp) continue;
+      await db.run('INSERT INTO quota (season, species, target) VALUES (?, ?, ?) ON CONFLICT (season, species) DO UPDATE SET target = excluded.target', [season, sp, Math.max(0, Number(q.target) || 0)]);
+    }
+    await changed('harvest'); res.json({ ok: true });
+  }));
+  app.delete('/api/quota/:id', requireAuth, requireAdmin, wrap(async (req, res) => {
+    const db = await getDb(); await db.run('DELETE FROM quota WHERE id = ?', [req.params.id]); await changed('harvest'); res.json({ ok: true });
+  }));
+
+  // ---------- Revierarbeiten ----------
+  const TASK_KINDS = ['kanzelpruefung', 'freischneiden', 'reparatur', 'kirrung', 'wegearbeit', 'sonstiges'];
+  app.get('/api/tasks', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    res.json(await db.all(`SELECT t.*, f.name AS feature_name, u.name AS created_by_name, d.name AS done_by_name FROM tasks t LEFT JOIN features f ON f.id = t.feature_id
+      LEFT JOIN users u ON u.id = t.created_by LEFT JOIN users d ON d.id = t.done_by WHERE t.done_at IS NULL OR t.done_at > ? ORDER BY t.done_at IS NOT NULL, t.due_date, t.id`, [new Date(Date.now() - 180 * 86400e3).toISOString()]));
+  }));
+  app.post('/api/tasks', requireAuth, wrap(async (req, res) => {
+    if (!str(req.body.title, 160)) throw httpError(400, 'Titel fehlt.');
+    const db = await getDb();
+    const id = await db.insert('INSERT INTO tasks (title, kind, feature_id, assignee, due_date, notes, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [str(req.body.title, 160), TASK_KINDS.includes(req.body.kind) ? req.body.kind : 'sonstiges', num(req.body.feature_id), str(req.body.assignee, 80), /^\d{4}-\d{2}-\d{2}$/.test(req.body.due_date || '') ? req.body.due_date : null, str(req.body.notes, 1000), req.user.id, now()]);
+    await changed('tasks'); await changed('revier'); res.json({ id });
+  }));
+  app.put('/api/tasks/:id', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const t = await db.get('SELECT * FROM tasks WHERE id = ?', [req.params.id]);
+    if (!t) throw httpError(404, 'Nicht gefunden.');
+    let doneAt = t.done_at, doneBy = t.done_by;
+    if ('done' in req.body) { doneAt = req.body.done ? now() : null; doneBy = req.body.done ? req.user.id : null; }
+    await db.run('UPDATE tasks SET title = ?, kind = ?, feature_id = ?, assignee = ?, due_date = ?, notes = ?, done_at = ?, done_by = ? WHERE id = ?', [
+      str(req.body.title ?? t.title, 160) || t.title, TASK_KINDS.includes(req.body.kind) ? req.body.kind : t.kind, 'feature_id' in req.body ? num(req.body.feature_id) : t.feature_id,
+      str(req.body.assignee ?? t.assignee, 80), 'due_date' in req.body ? (/^\d{4}-\d{2}-\d{2}$/.test(req.body.due_date || '') ? req.body.due_date : null) : t.due_date, str(req.body.notes ?? t.notes, 1000), doneAt, doneBy, t.id]);
+    await changed('tasks'); await changed('revier'); res.json({ ok: true });
+  }));
+  app.delete('/api/tasks/:id', requireAuth, wrap(async (req, res) => {
+    const db = await getDb(); await db.run('DELETE FROM tasks WHERE id = ?', [req.params.id]); await changed('tasks'); await changed('revier'); res.json({ ok: true });
+  }));
+
+  // ---------- Wildunfälle und Wildschäden ----------
+  const INCIDENT_SELECT = `SELECT i.*, u.name AS user_name, (SELECT CAST(COUNT(*) AS INTEGER) FROM incident_photos p WHERE p.incident_id = i.id) AS photo_count FROM incidents i LEFT JOIN users u ON u.id = i.user_id`;
+  const INCIDENT_STATUS = ['gemeldet', 'besichtigt', 'reguliert', 'erledigt'];
+  app.get('/api/incidents', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    res.json(await db.all(`${INCIDENT_SELECT} WHERE i.happened_at > ? OR i.status IN ('gemeldet','besichtigt') ORDER BY i.happened_at DESC`, [new Date(Date.now() - 365 * 86400e3).toISOString()]));
+  }));
+  app.get('/api/incidents/:id/photos', requireAuth, wrap(async (req, res) => {
+    const db = await getDb(); res.json(await db.all('SELECT id, data, created_at FROM incident_photos WHERE incident_id = ? ORDER BY id', [req.params.id]));
+  }));
+  app.post('/api/incidents', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const kind = req.body.kind === 'wildschaden' ? 'wildschaden' : 'wildunfall';
+    const lat = num(req.body.lat), lng = num(req.body.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) throw httpError(400, 'Position fehlt.');
+    const at = req.body.happened_at ? new Date(req.body.happened_at) : new Date();
+    if (Number.isNaN(at.getTime())) throw httpError(400, 'Ungültiger Zeitpunkt.');
+    const id = await db.insert('INSERT INTO incidents (kind, user_id, species, happened_at, lat, lng, road, police_ref, crop, farmer, area_ha, status, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [kind, req.user.id, str(req.body.species, 80), at.toISOString(), lat, lng, str(req.body.road, 120), str(req.body.police_ref, 80), str(req.body.crop, 80), str(req.body.farmer, 120), num(req.body.area_ha), 'gemeldet', str(req.body.note, 1000), now()]);
+    for (const d of (Array.isArray(req.body.photos) ? req.body.photos : []).slice(0, 5)) if (photoOk(d)) await db.run('INSERT INTO incident_photos (incident_id, data, created_at) VALUES (?, ?, ?)', [id, d, now()]);
+    await changed('incidents');
+    const title = kind === 'wildschaden' ? `Wildschaden gemeldet${req.body.crop ? ': ' + str(req.body.crop, 40) : ''}` : `Wildunfall${req.body.species ? ': ' + str(req.body.species, 40) : ''}`;
+    await notify('all', { title, body: `${req.user.name} hat ${kind === 'wildschaden' ? 'einen Wildschaden' : 'einen Wildunfall'} gemeldet (${fmtTime(at)})${req.body.road ? ', ' + str(req.body.road, 60) : ''}.`, url: '/#karte', tag: `incident-${id}` }, req.user.id);
+    res.json(await db.get(`${INCIDENT_SELECT} WHERE i.id = ?`, [id]));
+  }));
+  app.put('/api/incidents/:id', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const i = await db.get('SELECT * FROM incidents WHERE id = ?', [req.params.id]);
+    if (!i) throw httpError(404, 'Nicht gefunden.');
+    const at = req.body.happened_at ? new Date(req.body.happened_at) : null;
+    await db.run('UPDATE incidents SET species = ?, happened_at = ?, lat = ?, lng = ?, road = ?, police_ref = ?, crop = ?, farmer = ?, area_ha = ?, status = ?, note = ? WHERE id = ?', [
+      str(req.body.species ?? i.species, 80), at && !Number.isNaN(at.getTime()) ? at.toISOString() : i.happened_at, num(req.body.lat) ?? i.lat, num(req.body.lng) ?? i.lng,
+      str(req.body.road ?? i.road, 120), str(req.body.police_ref ?? i.police_ref, 80), str(req.body.crop ?? i.crop, 80), str(req.body.farmer ?? i.farmer, 120),
+      'area_ha' in req.body ? num(req.body.area_ha) : i.area_ha, INCIDENT_STATUS.includes(req.body.status) ? req.body.status : i.status, str(req.body.note ?? i.note, 1000), i.id]);
+    for (const d of (Array.isArray(req.body.photos) ? req.body.photos : []).slice(0, 5)) if (photoOk(d)) await db.run('INSERT INTO incident_photos (incident_id, data, created_at) VALUES (?, ?, ?)', [i.id, d, now()]);
+    await changed('incidents'); res.json(await db.get(`${INCIDENT_SELECT} WHERE i.id = ?`, [i.id]));
+  }));
+  app.delete('/api/incidents/:id', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const i = await db.get('SELECT * FROM incidents WHERE id = ?', [req.params.id]);
+    if (!i) throw httpError(404, 'Nicht gefunden.');
+    if (i.user_id !== req.user.id && !req.user.is_admin) throw httpError(403, 'Nur Melder oder Admin.');
+    await db.run('DELETE FROM incidents WHERE id = ?', [i.id]); await changed('incidents'); res.json({ ok: true });
+  }));
+
+  // ---------- Kontakte (Nachsuchengespann, Tierarzt, Polizei, ...) ----------
+  const CONTACT_ROLES = ['nachsuche', 'tierarzt', 'polizei', 'forst', 'landwirt', 'wildhandel', 'jagdbehoerde', 'sonstiges'];
+  app.get('/api/contacts', requireAuth, wrap(async (req, res) => { const db = await getDb(); res.json(await db.all('SELECT * FROM contacts ORDER BY role, name')); }));
+  app.post('/api/contacts', requireAuth, wrap(async (req, res) => {
+    if (!str(req.body.name, 80)) throw httpError(400, 'Name fehlt.');
+    const db = await getDb();
+    const id = await db.insert('INSERT INTO contacts (name, role, phone, note, created_at) VALUES (?, ?, ?, ?, ?)', [str(req.body.name, 80), CONTACT_ROLES.includes(req.body.role) ? req.body.role : 'sonstiges', str(req.body.phone, 40), str(req.body.note, 300), now()]);
+    await changed('contacts'); res.json({ id });
+  }));
+  app.put('/api/contacts/:id', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const c = await db.get('SELECT * FROM contacts WHERE id = ?', [req.params.id]);
+    if (!c) throw httpError(404, 'Nicht gefunden.');
+    await db.run('UPDATE contacts SET name = ?, role = ?, phone = ?, note = ? WHERE id = ?', [str(req.body.name ?? c.name, 80) || c.name, CONTACT_ROLES.includes(req.body.role) ? req.body.role : c.role, str(req.body.phone ?? c.phone, 40), str(req.body.note ?? c.note, 300), c.id]);
+    await changed('contacts'); res.json({ ok: true });
+  }));
+  app.delete('/api/contacts/:id', requireAuth, wrap(async (req, res) => {
+    const db = await getDb(); await db.run('DELETE FROM contacts WHERE id = ?', [req.params.id]); await changed('contacts'); res.json({ ok: true });
   }));
 
   // ---------- Wetter ----------

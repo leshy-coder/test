@@ -47,6 +47,25 @@ export async function seedDemo() {
   const ev = await db.insert('INSERT INTO events (title, date, time, place, description, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', ['Hegeringsitzung', new Date(Date.now() + 12 * 86400e3).toISOString().slice(0, 10), '19:30', 'Gasthaus Linde', 'Tagesordnung: Abschussplanung, Trophäenschau-Vorbereitung', hans.id, now()]);
   await db.run('INSERT INTO event_responses (event_id, user_id, status, brings, updated_at) VALUES (?, ?, ?, ?, ?)', [ev, grete.id, 'zusage', 'Beamer', now()]);
 
+  await db.run("UPDATE features SET interval_days = 4, wind_dirs = '' WHERE id = ?", [ids['Kirrung Nord']]);
+  await db.run("UPDATE features SET interval_days = 14 WHERE id = ?", [ids['Wildkamera Suhle']]);
+  await db.run("UPDATE features SET wind_dirs = 'W,SW,NW' WHERE id = ?", [ids['Kanzel Eichenwiese']]);
+  await db.run("UPDATE features SET wind_dirs = 'N,NO,O' WHERE id = ?", [ids['Kanzel Buchenhang']]);
+  await db.run("UPDATE features SET wind_dirs = 'S,SW' WHERE id = ?", [ids['Kanzel Bachtal']]);
+  await db.run("INSERT INTO feature_logs (feature_id, user_id, kind, note, created_at) VALUES (?, ?, 'beschickt', 'Mais 10 kg', ?)", [ids['Kirrung Nord'], grete.id, new Date(Date.now() - 6 * 86400e3).toISOString()]);
+  await db.run("INSERT INTO feature_logs (feature_id, user_id, kind, note, created_at) VALUES (?, ?, 'karte', '', ?)", [ids['Wildkamera Suhle'], karl.id, new Date(Date.now() - 3 * 86400e3).toISOString()]);
+  await db.run("INSERT INTO tasks (title, kind, feature_id, assignee, due_date, notes, created_by, created_at) VALUES (?, 'kanzelpruefung', ?, 'Karl', ?, 'Leiter und Sprossen prüfen', ?, ?)", ['Jährliche Standsicherheitsprüfung Kanzel Bachtal', ids['Kanzel Bachtal'], new Date(Date.now() + 10 * 86400e3).toISOString().slice(0, 10), hans.id, now()]);
+  await db.run("INSERT INTO tasks (title, kind, feature_id, assignee, due_date, done_at, done_by, notes, created_by, created_at) VALUES (?, 'kanzelpruefung', ?, 'Hans', ?, ?, ?, '', ?, ?)", ['Standsicherheitsprüfung Kanzel Eichenwiese', ids['Kanzel Eichenwiese'], new Date(Date.now() - 20 * 86400e3).toISOString().slice(0, 10), new Date(Date.now() - 20 * 86400e3).toISOString(), hans.id, hans.id, now()]);
+  await db.run("INSERT INTO tasks (title, kind, assignee, due_date, notes, created_by, created_at) VALUES (?, 'freischneiden', '', ?, 'Schussschneise Richtung Wiese', ?, ?)", ['Schneise am Buchenhang freischneiden', new Date(Date.now() + 20 * 86400e3).toISOString().slice(0, 10), hans.id, now()]);
+  const season = (() => { const d = new Date(); const y = d.getMonth() >= 3 ? d.getFullYear() : d.getFullYear() - 1; return `${y}/${String(y + 1).slice(2)}`; })();
+  for (const [sp, t] of [['Rehwild – Bock / Schmalreh', 6], ['Rehwild – Ricke / Kitz', 10], ['Schwarzwild – Frischling / Überläufer', 20], ['Schwarzwild – Bache / Keiler', 4], ['Fuchs – Altfuchs', 5]]) await db.run('INSERT INTO quota (season, species, target) VALUES (?, ?, ?)', [season, sp, t]);
+  const d30 = new Date(Date.now() - 30 * 86400e3).toISOString().slice(0, 10), d12 = new Date(Date.now() - 12 * 86400e3).toISOString().slice(0, 10);
+  await db.run("INSERT INTO harvest (user_id, species, count, date, shooter, weight_kg, notes, created_at) VALUES (?, 'Rehwild – Bock / Schmalreh', 1, ?, 'Hans', 17.5, 'Jährling', ?)", [hans.id, d30, now()]);
+  await db.run("INSERT INTO harvest (user_id, species, count, date, shooter, weight_kg, notes, created_at) VALUES (?, 'Schwarzwild – Frischling / Überläufer', 2, ?, 'Grete', 22, 'Kirrung Nord', ?)", [grete.id, d12, now()]);
+  await db.run("INSERT INTO incidents (kind, user_id, species, happened_at, lat, lng, road, police_ref, status, note, created_at) VALUES ('wildunfall', ?, 'Rehwild', ?, 50.9395, 10.2050, 'K12 Höhe Abzweig Forsthaus', 'VU 2026/1187', 'erledigt', 'Stück verendet, von Polizei aufgenommen', ?)", [karl.id, new Date(Date.now() - 5 * 86400e3).toISOString(), now()]);
+  await db.run("INSERT INTO incidents (kind, user_id, species, happened_at, lat, lng, crop, farmer, area_ha, status, note, created_at) VALUES ('wildschaden', ?, 'Schwarzwild', ?, 50.9625, 10.2160, 'Mais', 'Landwirt Müller', 0.4, 'gemeldet', 'Ecke zum Wald umgebrochen', ?)", [hans.id, new Date(Date.now() - 2 * 86400e3).toISOString(), now()]);
+  for (const [n, r, ph, note] of [['Peter Schweißhund (Nachsuchengespann)', 'nachsuche', '0170 1234567', 'Hannoverscher Schweißhund, rund um die Uhr'], ['Tierarztpraxis Dr. Vogel', 'tierarzt', '03691 12345', ''], ['Polizei Revier Eisenach', 'polizei', '110', 'Wildunfälle melden'], ['Förster Brandt', 'forst', '0171 7654321', '']]) await db.run('INSERT INTO contacts (name, role, phone, note, created_at) VALUES (?, ?, ?, ?, ?)', [n, r, ph, note, now()]);
+
   const date = new Date(); date.setDate(date.getDate() + 30);
   const huntId = await db.insert('INSERT INTO hunts (title, date, meet_time, meet_point, leader, description, status, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ['Herbstdrückjagd Buchenhain', date.toISOString().slice(0, 10), '08:00', 'Parkplatz Forsthaus', 'Hans',
