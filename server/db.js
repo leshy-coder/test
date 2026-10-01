@@ -66,18 +66,18 @@ async function sqliteAdapter() {
   };
 }
 
-/** Postgres: Netlify DB / Neon über HTTP-Treiber, jede andere DATABASE_URL über den normalen pg-Treiber. */
+/** Postgres: Netlify DB (automatisch über NETLIFY_DB_URL) oder jede DATABASE_URL über den pg-Treiber. */
 async function pgAdapter(url) {
-  let query; // (sql, params) -> { rows, rowCount }
-  if (/neon\.tech|NETLIFY/i.test(url) || process.env.NETLIFY_DATABASE_URL) {
-    const { neon } = await import('@netlify/neon');
-    const sql = neon(url);
-    query = async (s, p) => sql.query(s, p, { fullResults: true });
+  let pool;
+  if (process.env.NETLIFY_DB_URL && !process.env.DATABASE_URL) {
+    const { getDatabase } = await import('@netlify/database');
+    pool = getDatabase().pool;
   } else {
     const { default: pg } = await import('pg');
-    const pool = new pg.Pool({ connectionString: url, max: 3 });
-    query = (s, p) => pool.query(s, p);
+    const ssl = /sslmode=require|neon\.tech|\.aws\.|render\.com/i.test(url) ? { rejectUnauthorized: false } : undefined;
+    pool = new pg.Pool({ connectionString: url, max: 3, ssl });
   }
+  const query = (s, p) => pool.query(s, p);
   for (const stmt of SCHEMA.replace(/{{ID}}/g, 'SERIAL PRIMARY KEY').replace(/{{NOCASE}}/g, '').split(';')) {
     if (stmt.trim()) await query(stmt, []);
   }
@@ -95,7 +95,7 @@ async function pgAdapter(url) {
 let dbPromise;
 export function getDb() {
   if (!dbPromise) {
-    const url = process.env.NETLIFY_DATABASE_URL || process.env.DATABASE_URL;
+    const url = process.env.DATABASE_URL || process.env.NETLIFY_DB_URL;
     dbPromise = url ? pgAdapter(url) : sqliteAdapter();
     dbPromise.catch(e => { dbPromise = null; throw e; });
   }

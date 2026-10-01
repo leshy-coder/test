@@ -1,4 +1,4 @@
-# Netlify: statische Oberfläche aus public/, API als Function, Datenbank über Netlify DB (Postgres).
+# Netlify: statische Oberfläche aus public/, API als Function (/api/*), Datenbank über Netlify DB (Postgres).
 [build]
   publish = "public"
   command = "echo 'keine Build-Schritte nötig'"
@@ -6,15 +6,7 @@
 [functions]
   directory = "netlify/functions"
   node_bundler = "esbuild"
-  external_node_modules = ["express", "serverless-http", "web-push", "@netlify/neon", "@neondatabase/serverless", "pg"]
-
-[functions.api]
-  included_files = ["server/**"]
-
-[[redirects]]
-  from = "/api/*"
-  to = "/.netlify/functions/api/:splat"
-  status = 200
+  external_node_modules = ["express", "serverless-http", "web-push", "pg", "@netlify/database"]
 
 [[redirects]]
   from = "/*"

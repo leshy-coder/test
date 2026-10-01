@@ -15,7 +15,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@netlify/neon": "^0.1.2",
+    "@netlify/database": "^2.0.1",
     "express": "^4.21.2",
     "pg": "^8.23.1",
     "serverless-http": "^3.2.0",

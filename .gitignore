@@ -3,3 +3,4 @@ data/*.db
 data/*.db-*
 data/vapid.json
 .env
+.netlify/
