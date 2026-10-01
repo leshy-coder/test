@@ -7,7 +7,7 @@ const state = {
   token: localStorage.getItem('token'),
   me: null, users: [], online: [],
   revier: { name: 'Mein Revier', center: { lat: 51.1657, lng: 10.4515, zoom: 6 }, boundaries: [], features: [] },
-  checkins: { active: [], history: [] }, sightings: [],
+  checkins: { active: [], history: [] }, sightings: [], shots: [],
   plans: [], hunts: [], hunt: null, huntTab: 'uebersicht',
   weather: null, notifications: [],
   view: 'karte', checkinMode: 'kanzel',
@@ -99,7 +99,7 @@ async function boot() {
   $('#btn-me').textContent = initials(state.me.name); $('#btn-me').style.background = state.me.color;
   $('#me-name').textContent = state.me.name;
   try { initMap(); } catch (e) { console.error('Karte konnte nicht initialisiert werden', e); toast('Karte nicht verfügbar', 'error'); }
-  await Promise.all([loadRevier(), loadUsers(), loadCheckins(), loadPlans(), loadHunts(), loadNotifications(), loadSightings()]);
+  await Promise.all([loadRevier(), loadUsers(), loadCheckins(), loadPlans(), loadHunts(), loadNotifications(), loadSightings(), loadShots()]);
   loadWeather();
   connectWs();
   startPolling();
@@ -111,7 +111,7 @@ async function boot() {
 
 // ---------- Live-Updates: Abfrage der Versionszähler (überall) + WebSocket (nur lokaler Server) ----------
 let ws, wsTimer, wsFailures = 0, wsEverOpen = false, pollTimer, knownVersions = null;
-const loaders = { users: () => loadUsers(), revier: loadRevier, checkins: () => loadCheckins().then(loadNotifications), plans: () => loadPlans().then(loadNotifications), hunts: refreshHunts, sightings: () => loadSightings().then(loadNotifications) };
+const loaders = { users: () => loadUsers(), revier: loadRevier, checkins: () => loadCheckins().then(loadNotifications), plans: () => loadPlans().then(loadNotifications), hunts: refreshHunts, sightings: () => loadSightings().then(loadNotifications), shots: () => loadShots().then(loadNotifications) };
 function refreshHunts(data = {}) {
   return loadHunts().then(() => { if (state.hunt && (!data.hunt_id || data.hunt_id === state.hunt.id)) return loadHunt(state.hunt.id); }).then(loadNotifications);
 }
@@ -180,7 +180,7 @@ function showView(v) {
 async function loadUsers() { state.users = await api('/users'); }
 
 // ---------- Revier / Map ----------
-let map, layers = {}, boundaryLayer, featureLayer, checkinLayer, sightingLayer, drawControl, activeTool = null, meMarker;
+let map, layers = {}, boundaryLayer, featureLayer, checkinLayer, sightingLayer, shotLayer, measureLayer, drawControl, activeTool = null, meMarker, pendingFlightShot = null;
 const featureKinds = { kanzel: 'Kanzel', kamera: 'Wildkamera', kirrung: 'Kirrung', sonstiges: 'Sonstiges' };
 
 function initMap() {
@@ -198,6 +198,8 @@ function initMap() {
   featureLayer = new L.FeatureGroup().addTo(map);
   checkinLayer = new L.FeatureGroup().addTo(map);
   sightingLayer = new L.FeatureGroup().addTo(map);
+  shotLayer = new L.FeatureGroup().addTo(map);
+  measureLayer = new L.FeatureGroup().addTo(map);
 
   map.on('click', onMapClick);
   map.on(L.Draw.Event.CREATED, async e => {
@@ -229,6 +231,10 @@ function setTool(tool) {
   $$('.map-toolbar .tool').forEach(b => b.classList.toggle('active', b.dataset.tool === tool));
   const hint = $('#map-hint');
   if (drawControl) { map.removeControl(drawControl); drawControl = null; }
+  if (tool !== 'messen') $('#measure-box').classList.add('hidden');
+  if (tool !== 'flucht') pendingFlightShot = null;
+  // Während des Platzierens kein Doppeltipp-Zoom, damit schnelle Tipps alle als Klick ankommen
+  if (tool) map.doubleClickZoom.disable(); else map.doubleClickZoom.enable();
   if (!tool) { hint.classList.add('hidden'); $('#map').style.cursor = ''; return; }
   hint.classList.remove('hidden');
   if (tool === 'grenze') {
@@ -242,14 +248,46 @@ function setTool(tool) {
   } else if (tool === 'faehrte') {
     hint.textContent = 'Tippe auf die Karte an die Stelle der Fährte oder Beobachtung';
     $('#map').style.cursor = 'crosshair';
+  } else if (tool === 'anschuss') {
+    hint.textContent = 'Tippe auf die Karte an die Stelle des Anschusses';
+    $('#map').style.cursor = 'crosshair';
+  } else if (tool === 'messen') {
+    hint.textContent = 'Punkte antippen, um Entfernungen zu messen (auch Kanzeln und Marker)';
+    $('#map').style.cursor = 'crosshair';
+    $('#measure-box').classList.remove('hidden');
+    renderMeasure();
+  } else if (tool === 'flucht') {
+    hint.textContent = 'Tippe auf die Karte in die Richtung, in die das Stück geflüchtet ist';
+    $('#map').style.cursor = 'crosshair';
+  } else if (tool === 'fund') {
+    hint.textContent = 'Tippe auf die Karte an den Fundort des Stücks';
+    $('#map').style.cursor = 'crosshair';
   } else {
     hint.textContent = `Tippe auf die Karte, um eine ${featureKinds[tool]} zu setzen`;
     $('#map').style.cursor = 'crosshair';
   }
 }
+const PLACEMENT_TOOLS = ['messen', 'faehrte', 'anschuss', 'flucht', 'fund', 'kanzel', 'kamera', 'kirrung'];
+function markerClickDuringPlacement(latlng) {
+  if (!PLACEMENT_TOOLS.includes(activeTool)) return false;
+  onMapClick({ latlng: L.latLng(latlng) });
+  return true;
+}
 async function onMapClick(e) {
   if (!activeTool || activeTool === 'grenze') return;
+  if (activeTool === 'messen') return addMeasurePoint(e.latlng);
   if (activeTool === 'faehrte') { setTool(null); return sightingDialog({ lat: e.latlng.lat, lng: e.latlng.lng }); }
+  if (activeTool === 'anschuss') { setTool(null); return shotDialog({ lat: e.latlng.lat, lng: e.latlng.lng }); }
+  if (activeTool === 'fund' && pendingFound) {
+    const id = pendingFound; pendingFound = null; setTool(null);
+    try { await api('/shots/' + id, { method: 'PUT', body: { status: 'gefunden', found_lat: e.latlng.lat, found_lng: e.latlng.lng } }); toast('Fundort gespeichert – Waidmannsheil!'); } catch (err) { toast(err.message, 'error'); }
+    return;
+  }
+  if (activeTool === 'flucht' && pendingFlightShot) {
+    const id = pendingFlightShot; setTool(null);
+    try { await api('/shots/' + id, { method: 'PUT', body: { flight_lat: e.latlng.lat, flight_lng: e.latlng.lng } }); toast('Fluchtrichtung gesetzt'); } catch (err) { toast(err.message, 'error'); }
+    return;
+  }
   const kind = activeTool;
   const f = await api('/features', { body: { kind, lat: e.latlng.lat, lng: e.latlng.lng } });
   setTool(null);
@@ -305,7 +343,7 @@ function renderMapFeatures() {
     const m = L.marker([f.lat, f.lng], { icon: markerIcon(f.kind, (occ ? 'occupied ' : '') + (planned.has(f.id) ? 'planned' : '')), draggable: true });
     m.bindTooltip(f.name, { permanent: true, direction: 'bottom', offset: [0, 2], className: 'marker-label' });
     m.on('dragend', async () => { const p = m.getLatLng(); await api('/features/' + f.id, { method: 'PUT', body: { lat: p.lat, lng: p.lng } }); });
-    m.on('click', () => openFeaturePopup(m, f, occ));
+    m.on('click', () => { if (markerClickDuringPlacement(m.getLatLng())) return; openFeaturePopup(m, f, occ); });
     featureLayer.addLayer(m);
   }
   if (firstFit) {
@@ -493,6 +531,165 @@ function renderPlans() {
   });
 }
 
+// ---------- Entfernungsmesser ----------
+let measurePoints = [];
+const fmtDist = m => m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${Math.round(m)} m`;
+function bearingDeg(a, b) {
+  const r = Math.PI / 180, dLng = (b.lng - a.lng) * r;
+  const y = Math.sin(dLng) * Math.cos(b.lat * r), x = Math.cos(a.lat * r) * Math.sin(b.lat * r) - Math.sin(a.lat * r) * Math.cos(b.lat * r) * Math.cos(dLng);
+  return ((Math.atan2(y, x) / r) + 360) % 360;
+}
+function addMeasurePoint(latlng) { measurePoints.push(L.latLng(latlng)); renderMeasure(); }
+function renderMeasure() {
+  measureLayer.clearLayers();
+  let total = 0, last = 0, lastBearing = null;
+  measurePoints.forEach((p, i) => {
+    measureLayer.addLayer(L.marker(p, { icon: L.divIcon({ className: '', html: '<div class="measure-point"></div>', iconSize: [12, 12], iconAnchor: [6, 6] }), interactive: false }));
+    if (i > 0) {
+      const a = measurePoints[i - 1], d = a.distanceTo(p); total += d; last = d; lastBearing = bearingDeg(a, p);
+      const line = L.polyline([a, p], { color: '#9b3b2d', weight: 3, dashArray: '6 6' });
+      line.bindTooltip(fmtDist(d), { permanent: true, direction: 'center', className: 'measure-label' });
+      measureLayer.addLayer(line);
+    }
+  });
+  $('#measure-total').textContent = measurePoints.length > 1 ? `Gesamt ${fmtDist(total)}` : measurePoints.length === 1 ? 'Zweiten Punkt antippen' : 'Ersten Punkt antippen';
+  $('#measure-last').textContent = measurePoints.length > 1 ? `Letzter Abschnitt ${fmtDist(last)} · Richtung ${Math.round(lastBearing)}° ${compass(lastBearing)}` : '';
+}
+$('#measure-undo').onclick = () => { measurePoints.pop(); renderMeasure(); };
+$('#measure-clear').onclick = () => { measurePoints = []; renderMeasure(); };
+$('#measure-done').onclick = () => { setTool(null); };
+
+// ---------- Anschüsse / Nachsuche ----------
+const SHOT_SIGNS = ['Schweiß hell', 'Schweiß dunkel', 'Lungenschweiß (schaumig)', 'Schnitthaar', 'Knochensplitter', 'Panseninhalt', 'Wildbret', 'Kein Pirschzeichen'];
+const SHOT_STATUS = { offen: ['Offen', 'warn'], nachsuche: ['Nachsuche läuft', 'danger'], gefunden: ['Gefunden', 'ok'], abgebrochen: ['Abgebrochen', ''] };
+const destPoint = (lat, lng, bearing, meters) => {
+  const R = 6371000, r = Math.PI / 180, b = bearing * r, la = lat * r, lo = lng * r, dr = meters / R;
+  const la2 = Math.asin(Math.sin(la) * Math.cos(dr) + Math.cos(la) * Math.sin(dr) * Math.cos(b));
+  const lo2 = lo + Math.atan2(Math.sin(b) * Math.sin(dr) * Math.cos(la), Math.cos(dr) - Math.sin(la) * Math.sin(la2));
+  return [la2 / r, lo2 / r];
+};
+async function loadShots() { state.shots = await api('/shots'); renderShots(); renderShotMarkers(); }
+function renderShotMarkers() {
+  if (!map) return;
+  shotLayer.clearLayers();
+  for (const sh of state.shots) {
+    const m = L.marker([sh.lat, sh.lng], { zIndexOffset: 800, draggable: sh.user_id === state.me.id || !!state.me.is_admin,
+      icon: L.divIcon({ className: '', html: `<div class="shot ${sh.status}"><span class="ico ico-anschuss"></span></div>`, iconSize: [34, 34], iconAnchor: [17, 17], popupAnchor: [0, -16] }) });
+    m.bindTooltip(`Anschuss ${sh.species} · ${SHOT_STATUS[sh.status][0]} · ${ageText(sh.shot_at)}`);
+    m.on('dragend', async () => { const p = m.getLatLng(); await api('/shots/' + sh.id, { method: 'PUT', body: { lat: p.lat, lng: p.lng } }); });
+    m.on('click', () => { if (markerClickDuringPlacement(m.getLatLng())) return; openShotPopup(m, sh); });
+    shotLayer.addLayer(m);
+    if (Number.isFinite(sh.flight_bearing)) {
+      const end = sh.flight_lat && sh.flight_lng ? [sh.flight_lat, sh.flight_lng] : destPoint(sh.lat, sh.lng, sh.flight_bearing, 150);
+      shotLayer.addLayer(L.polyline([[sh.lat, sh.lng], end], { color: '#9b3b2d', weight: 3, dashArray: '8 6', interactive: false }));
+      shotLayer.addLayer(L.marker(end, { interactive: false, icon: L.divIcon({ className: '', html: `<div class="flight-arrow" style="transform:rotate(${Math.round(sh.flight_bearing)}deg)"></div>`, iconSize: [18, 18], iconAnchor: [9, 11] }) }));
+    }
+    if (sh.found_lat && sh.found_lng) {
+      const fm = L.marker([sh.found_lat, sh.found_lng], { interactive: true, icon: L.divIcon({ className: '', html: '<div class="found-marker"></div>', iconSize: [22, 22], iconAnchor: [11, 11] }) });
+      fm.bindTooltip(`Fundort ${sh.species}`); shotLayer.addLayer(fm);
+    }
+  }
+}
+function renderShots() {
+  const open = state.shots.filter(s => s.status === 'offen' || s.status === 'nachsuche');
+  $('#shots-section').classList.toggle('hidden', !state.shots.length);
+  $('#shots-count').textContent = open.length ? `${open.length} offen` : 'alle erledigt';
+  $('#shots-list').innerHTML = state.shots.slice(0, 8).map(sh => `
+    <div class="person" data-id="${sh.id}" style="border-left-color:${sh.status === 'gefunden' ? 'var(--ok)' : sh.status === 'abgebrochen' ? '#999' : 'var(--danger)'};cursor:pointer">
+      <span class="shot ${sh.status}" style="width:28px;height:28px;border-width:2px"><span class="ico ico-anschuss" style="width:18px;height:18px"></span></span>
+      <div class="who"><b>${esc(sh.species)} <span class="status-tag ${SHOT_STATUS[sh.status][1]}">${SHOT_STATUS[sh.status][0]}</span></b><span>${esc(sh.user_name || '')}${sh.feature_name ? ' · ' + esc(sh.feature_name) : ''}${Number.isFinite(sh.flight_bearing) ? ' · Flucht ' + compass(sh.flight_bearing) : ''}${sh.photo_count ? ' · ' + sh.photo_count + ' Foto' + (sh.photo_count > 1 ? 's' : '') : ''}</span></div>
+      <div class="since">${ageText(sh.shot_at)}</div></div>`).join('');
+  $$('#shots-list [data-id]').forEach(el => el.onclick = () => { const sh = state.shots.find(x => x.id === Number(el.dataset.id)); if (sh && map) { map.setView([sh.lat, sh.lng], Math.max(map.getZoom(), 16)); shotLayer.eachLayer(l => { if (l.getLatLng && l.getLatLng().lat === sh.lat && l.getLatLng().lng === sh.lng && l.options.draggable !== undefined) l.fire('click'); }); } });
+}
+async function openShotPopup(marker, sh) {
+  const mine = sh.user_id === state.me.id || state.me.is_admin;
+  const signs = sh.signs ? sh.signs.split(',').map(x => `<span class="chip">${esc(x.trim())}</span>`).join(' ') : '';
+  marker.bindPopup(`<h3>Anschuss ${esc(sh.species)} <span class="status-tag ${SHOT_STATUS[sh.status][1]}">${SHOT_STATUS[sh.status][0]}</span></h3>
+    <div>${fmtDT(sh.shot_at)} (${ageText(sh.shot_at)}) · ${esc(sh.user_name || '')}${sh.feature_name ? ' · von ' + esc(sh.feature_name) : ''}</div>
+    <div class="small">${Number.isFinite(sh.flight_bearing) ? `Fluchtrichtung ${Math.round(sh.flight_bearing)}° ${compass(sh.flight_bearing)}` : '<span class="muted">Keine Fluchtrichtung</span>'}</div>
+    ${signs ? `<div class="receipts">${signs}</div>` : ''}${sh.note ? `<div class="muted small">„${esc(sh.note)}“</div>` : ''}
+    <div class="photo-grid" id="shot-photos-${sh.id}">${sh.photo_count ? '<span class="muted small">Fotos werden geladen …</span>' : ''}</div>
+    <div class="row">
+      ${mine && sh.status !== 'gefunden' ? `<button class="btn sm" data-act="status" data-val="${sh.status === 'nachsuche' ? 'gefunden' : 'nachsuche'}">${sh.status === 'nachsuche' ? 'Gefunden' : 'Nachsuche starten'}</button>` : ''}
+      ${mine ? `<button class="btn sm" data-act="flucht">Richtung setzen</button><button class="btn sm" data-act="edit">Bearbeiten</button><button class="btn sm danger" data-act="del">Löschen</button>` : ''}
+    </div>`, { maxWidth: 320 }).openPopup();
+  const pop = marker.getPopup().getElement();
+  $('[data-act="status"]', pop)?.addEventListener('click', async () => {
+    const val = $('[data-act="status"]', pop).dataset.val; map.closePopup();
+    try {
+      if (val === 'gefunden' && confirm('Fundort jetzt auf der Karte markieren? (Abbrechen = nur als gefunden melden)')) {
+        pendingFound = sh.id; setTool('fund');
+      } else await api('/shots/' + sh.id, { method: 'PUT', body: { status: val } });
+    } catch (e) { toast(e.message, 'error'); }
+  });
+  $('[data-act="flucht"]', pop)?.addEventListener('click', () => { map.closePopup(); pendingFlightShot = sh.id; setTool('flucht'); });
+  $('[data-act="edit"]', pop)?.addEventListener('click', () => { map.closePopup(); shotDialog(sh); });
+  $('[data-act="del"]', pop)?.addEventListener('click', async () => { if (confirm('Anschuss-Markierung löschen?')) { map.closePopup(); await api('/shots/' + sh.id, { method: 'DELETE' }); } });
+  if (sh.photo_count) {
+    try {
+      const photos = await api(`/shots/${sh.id}/photos`);
+      const grid = $(`#shot-photos-${sh.id}`); if (!grid) return;
+      grid.innerHTML = photos.map(p => `<span class="ph"><img src="${p.data}" alt="Foto" data-full="${p.id}">${mine ? `<button data-delphoto="${p.id}" title="Foto löschen">✕</button>` : ''}</span>`).join('');
+      $$('img', grid).forEach(img => img.onclick = () => openDialog(`<img class="photo-full" src="${img.src}"><div class="row" style="margin-top:.6rem"><button class="btn" data-close>Schließen</button></div>`));
+      $$('[data-delphoto]', grid).forEach(b => b.onclick = async () => { if (confirm('Foto löschen?')) { await api(`/shots/${sh.id}/photos/${b.dataset.delphoto}`, { method: 'DELETE' }); map.closePopup(); } });
+    } catch {}
+  }
+}
+let pendingFound = null;
+// Foto verkleinern, damit es als Daten-URL in die Datenbank passt (max. 1280 px, JPEG)
+function compressImage(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image(); const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const max = 1280, scale = Math.min(1, max / Math.max(img.width, img.height));
+      const c = document.createElement('canvas'); c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url);
+      resolve(c.toDataURL('image/jpeg', 0.72));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Bild konnte nicht gelesen werden')); };
+    img.src = url;
+  });
+}
+function shotDialog(sh) {
+  const isNew = !sh.id;
+  const when = sh.shot_at ? new Date(sh.shot_at) : new Date();
+  const mine = state.checkins.active.find(c => c.user_id === state.me.id);
+  const stands = state.revier.features.filter(f => f.kind === 'kanzel');
+  const chosen = new Set((sh.signs || '').split(',').map(x => x.trim()).filter(Boolean));
+  const dirs = ['N', 'NNO', 'NO', 'ONO', 'O', 'OSO', 'SO', 'SSO', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+  const curDir = Number.isFinite(sh.flight_bearing) ? dirs[Math.round(sh.flight_bearing / 22.5) % 16] : '';
+  let photos = [];
+  openDialog(`<h2>${isNew ? 'Anschuss markieren' : 'Anschuss bearbeiten'}</h2>
+    <label>Wildart<input id="sh-species" list="species-list" maxlength="60" value="${esc(sh.species || '')}" placeholder="z. B. Schwarzwild, Rehwild (Bock)"><datalist id="species-list">${SPECIES.map(x => `<option value="${x}">`).join('')}</datalist></label>
+    <label>Zeitpunkt des Schusses<input type="datetime-local" id="sh-time" value="${toLocalInput(when)}"></label>
+    <label>Von welcher Kanzel<select id="sh-stand"><option value="">– keine / Pirsch –</option>${stands.map(f => `<option value="${f.id}" ${(sh.feature_id ?? mine?.feature_id) === f.id ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}</select></label>
+    <label>Fluchtrichtung<select id="sh-dir"><option value="">– unbekannt / später auf Karte setzen –</option>${dirs.map((d, i) => `<option value="${i * 22.5}" ${d === curDir ? 'selected' : ''}>${d} (${i * 22.5}°)</option>`).join('')}</select></label>
+    <label>Pirschzeichen am Anschuss</label><div class="signs">${SHOT_SIGNS.map(x => `<label><input type="checkbox" value="${x}" ${chosen.has(x) ? 'checked' : ''}>${x}</label>`).join('')}</div>
+    <label>Notiz<textarea id="sh-note" maxlength="1000" placeholder="Schusszeichen, Verhalten des Stücks, Entfernung, Trefferlage …">${esc(sh.note || '')}</textarea></label>
+    <label>Fotos vom Anschuss<input type="file" id="sh-photos" accept="image/*" capture="environment" multiple></label>
+    <div class="photo-grid" id="sh-preview"></div>
+    <div class="row"><button class="btn primary" id="sh-save">${isNew ? 'Anschuss melden' : 'Speichern'}</button><button class="btn" data-close>Abbrechen</button></div>
+    ${isNew ? '<p class="muted small">Alle Nutzer erhalten eine Push-Nachricht. Danach kannst du über die Markierung „Richtung setzen“ die Fluchtrichtung direkt auf der Karte antippen und den Stand der Nachsuche melden.</p>' : ''}`, d => {
+    $('#sh-photos', d).onchange = async () => {
+      for (const f of [...$('#sh-photos', d).files].slice(0, 5 - photos.length)) { try { photos.push(await compressImage(f)); } catch (e) { toast(e.message, 'error'); } }
+      $('#sh-preview', d).innerHTML = photos.map((p, i) => `<span class="ph"><img src="${p}" alt=""><button data-i="${i}">✕</button></span>`).join('');
+      $$('#sh-preview button', d).forEach(b => b.onclick = () => { photos.splice(Number(b.dataset.i), 1); $('#sh-photos', d).onchange(); });
+    };
+    $('#sh-save', d).onclick = async () => {
+      const body = { species: $('#sh-species', d).value, shot_at: new Date($('#sh-time', d).value).toISOString(), feature_id: $('#sh-stand', d).value || null,
+        flight_bearing: $('#sh-dir', d).value === '' ? null : Number($('#sh-dir', d).value), signs: $$('.signs input:checked', d).map(x => x.value).join(', '),
+        note: $('#sh-note', d).value, lat: sh.lat, lng: sh.lng, photos };
+      if (!body.species.trim()) return toast('Bitte Wildart angeben', 'error');
+      $('#sh-save', d).disabled = true;
+      try {
+        if (isNew) { await api('/shots', { body }); toast('Anschuss gemeldet – Waidmannsheil und gute Nachsuche'); }
+        else { await api('/shots/' + sh.id, { method: 'PUT', body }); toast('Gespeichert'); }
+        closeDialog();
+      } catch (e) { toast(e.message, 'error'); $('#sh-save', d).disabled = false; }
+    };
+  });
+}
+
 // ---------- Fährten / Wildbeobachtungen ----------
 const SPECIES = ['Schwarzwild', 'Rehwild', 'Rotwild', 'Damwild', 'Muffelwild', 'Fuchs', 'Dachs', 'Waschbär', 'Wolf', 'Sonstiges'];
 const SIGHTING_KINDS = { faehrte: 'Fährte / Spuren', sichtung: 'Sichtung', losung: 'Losung', wuehlstelle: 'Wühlstelle', suhle: 'Suhle / Malbaum', wildschaden: 'Wildschaden', riss: 'Riss', fallwild: 'Fallwild', wildkamera: 'Wildkamera-Aufnahme' };
@@ -518,6 +715,7 @@ function renderSightingMarkers() {
     m.bindTooltip(`${sg.species} · ${SIGHTING_KINDS[sg.kind] || sg.kind} · ${ageText(sg.observed_at)}`);
     m.on('dragend', async () => { const p = m.getLatLng(); await api('/sightings/' + sg.id, { method: 'PUT', body: { lat: p.lat, lng: p.lng } }); });
     m.on('click', () => {
+      if (markerClickDuringPlacement(m.getLatLng())) return;
       const mine = sg.user_id === state.me.id || state.me.is_admin;
       m.bindPopup(`<h3>${esc(sg.species)}</h3><div>${esc(SIGHTING_KINDS[sg.kind] || sg.kind)} · ${fmtDT(sg.observed_at)} (${ageText(sg.observed_at)})</div>
         ${sg.note ? `<div class="muted small">„${esc(sg.note)}“</div>` : ''}<div class="muted small">gemeldet von ${esc(sg.user_name || 'unbekannt')}</div>

@@ -40,6 +40,9 @@ export async function seedDemo() {
   await db.run("INSERT INTO sightings (user_id, species, kind, note, lat, lng, observed_at, created_at) VALUES (?, 'Rehwild', 'sichtung', ?, ?, ?, ?, ?)", [karl.id, 'Bock mit zwei Ricken am Waldrand', 50.9580, 10.1950, new Date(Date.now() - 3 * 86400e3).toISOString(), now()]);
   await db.run("INSERT INTO sightings (user_id, species, kind, note, lat, lng, observed_at, created_at) VALUES (?, 'Schwarzwild', 'wuehlstelle', ?, ?, ?, ?, ?)", [hans.id, 'Wiese am Bachtal frisch umgebrochen', 50.9435, 10.1985, new Date(Date.now() - 9 * 86400e3).toISOString(), now()]);
 
+  await db.run("INSERT INTO shots (user_id, species, shot_at, lat, lng, flight_bearing, signs, note, status, feature_id, created_at) VALUES (?, 'Rehwild (Bock)', ?, ?, ?, ?, ?, ?, 'nachsuche', ?, ?)",
+    [karl.id, new Date(Date.now() - 2 * 3600e3).toISOString(), 50.9500, 10.2120, 230, 'Schweiß hell, Schnitthaar', 'Blattschuss vermutet, Stück sofort ab in die Dickung', ids['Kanzel Buchenhang'], now()]);
+
   const date = new Date(); date.setDate(date.getDate() + 30);
   const huntId = await db.insert('INSERT INTO hunts (title, date, meet_time, meet_point, leader, description, status, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ['Herbstdrückjagd Buchenhain', date.toISOString().slice(0, 10), '08:00', 'Parkplatz Forsthaus', 'Hans',

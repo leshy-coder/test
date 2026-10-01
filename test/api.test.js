@@ -166,6 +166,26 @@ test('Fährten melden, bearbeiten, löschen', async () => {
   assert.equal((await call('/sightings', { token: hans.token })).data.length, 0);
 });
 
+test('Anschuss mit Foto, Fluchtrichtung und Status', async () => {
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+  const sh = await call('/shots', { token: hans.token, body: { species: 'Schwarzwild', lat: 50.95, lng: 10.2, flight_bearing: 225, signs: 'Schweiß dunkel', note: 'Kugel sitzt weit hinten', photos: [png, 'nicht-erlaubt'] } });
+  assert.equal(sh.status, 200); assert.equal(sh.data.photo_count, 1); assert.equal(sh.data.flight_bearing, 225); assert.equal(sh.data.status, 'offen');
+  assert.ok((await call('/notifications', { token: grete.token })).data.some(x => x.title.startsWith('Anschuss')));
+  const photos = (await call(`/shots/${sh.data.id}/photos`, { token: grete.token })).data;
+  assert.equal(photos.length, 1); assert.ok(photos[0].data.startsWith('data:image/png'));
+  // Fluchtrichtung über Kartenpunkt: Punkt nördlich -> Peilung ~0
+  const dir = await call(`/shots/${sh.data.id}`, { token: hans.token, method: 'PUT', body: { flight_lat: 50.96, flight_lng: 10.2 } });
+  assert.ok(dir.data.flight_bearing < 1 || dir.data.flight_bearing > 359, 'Peilung nach Norden');
+  assert.equal((await call(`/shots/${sh.data.id}`, { token: grete.token, method: 'PUT', body: { status: 'gefunden' } })).status, 403);
+  const found = await call(`/shots/${sh.data.id}`, { token: hans.token, method: 'PUT', body: { status: 'gefunden', found_lat: 50.955, found_lng: 10.201 } });
+  assert.equal(found.data.status, 'gefunden'); assert.equal(found.data.found_lat, 50.955);
+  assert.ok((await call('/notifications', { token: grete.token })).data.some(x => x.title.includes('gefunden')));
+  assert.equal((await call('/shots', { token: grete.token })).data.length, 1);
+  await call(`/shots/${sh.data.id}/photos/${photos[0].id}`, { token: hans.token, method: 'DELETE' });
+  assert.equal((await call(`/shots/${sh.data.id}/photos`, { token: hans.token })).data.length, 0);
+  assert.equal((await call(`/shots/${sh.data.id}`, { token: hans.token, method: 'DELETE' })).status, 200);
+});
+
 test('Push-Schlüssel und Abonnement', async () => {
   const k = (await call('/push/key')).data;
   assert.ok(k.publicKey.length > 60);

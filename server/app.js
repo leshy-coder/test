@@ -26,7 +26,7 @@ function fmtTime(iso) {
 export function createApp({ onChange = () => {} } = {}) {
   const app = express();
   app.set('trust proxy', true);
-  app.use(express.json({ limit: '2mb' }));
+  app.use(express.json({ limit: '8mb' }));
 
   const changed = async (name, data = {}) => { await bump(name); onChange(name, data); };
   const featureName = async (db, id) => id ? (await db.get('SELECT name FROM features WHERE id = ?', [id]))?.name || null : null;
@@ -215,6 +215,90 @@ export function createApp({ onChange = () => {} } = {}) {
     await db.run('DELETE FROM sightings WHERE id = ?', [sg.id]);
     await changed('sightings');
     res.json({ ok: true });
+  }));
+
+  // ---------- Anschüsse / Nachsuche ----------
+  const SHOT_STATUS = ['offen', 'nachsuche', 'gefunden', 'abgebrochen'];
+  const SHOT_SELECT = `SELECT s.*, u.name AS user_name, u.color AS user_color, f.name AS feature_name,
+    (SELECT CAST(COUNT(*) AS INTEGER) FROM shot_photos p WHERE p.shot_id = s.id) AS photo_count
+    FROM shots s LEFT JOIN users u ON u.id = s.user_id LEFT JOIN features f ON f.id = s.feature_id`;
+  const bearingTo = (lat1, lng1, lat2, lng2) => {
+    const r = Math.PI / 180, dLng = (lng2 - lng1) * r;
+    const y = Math.sin(dLng) * Math.cos(lat2 * r), x = Math.cos(lat1 * r) * Math.sin(lat2 * r) - Math.sin(lat1 * r) * Math.cos(lat2 * r) * Math.cos(dLng);
+    return ((Math.atan2(y, x) / r) + 360) % 360;
+  };
+  const compassName = deg => ['N', 'NNO', 'NO', 'ONO', 'O', 'OSO', 'SO', 'SSO', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'][Math.round(deg / 22.5) % 16];
+  function photoOk(d) { return typeof d === 'string' && /^data:image\/(jpeg|png|webp);base64,/.test(d) && d.length < 2_000_000; }
+  const canEditShot = (shot, user) => shot.user_id === user.id || !!user.is_admin;
+
+  app.get('/api/shots', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const since = new Date(Date.now() - 60 * 86400e3).toISOString();
+    res.json(await db.all(`${SHOT_SELECT} WHERE s.shot_at > ? OR s.status IN ('offen', 'nachsuche') ORDER BY s.shot_at DESC`, [since]));
+  }));
+  app.get('/api/shots/:id/photos', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    res.json(await db.all('SELECT id, data, created_at FROM shot_photos WHERE shot_id = ? ORDER BY id', [req.params.id]));
+  }));
+  app.post('/api/shots', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const lat = num(req.body.lat), lng = num(req.body.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) throw httpError(400, 'Position fehlt.');
+    const shotAt = req.body.shot_at ? new Date(req.body.shot_at) : new Date();
+    if (Number.isNaN(shotAt.getTime())) throw httpError(400, 'Ungültiger Zeitpunkt.');
+    const bearing = num(req.body.flight_bearing);
+    const id = await db.insert('INSERT INTO shots (user_id, species, shot_at, lat, lng, flight_bearing, signs, note, status, feature_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [req.user.id, str(req.body.species, 60) || 'Unbekannt', shotAt.toISOString(), lat, lng, Number.isFinite(bearing) ? ((bearing % 360) + 360) % 360 : null,
+        str(req.body.signs, 300), str(req.body.note, 1000), SHOT_STATUS.includes(req.body.status) ? req.body.status : 'offen', num(req.body.feature_id), now()]);
+    for (const d of (Array.isArray(req.body.photos) ? req.body.photos : []).slice(0, 5)) {
+      if (photoOk(d)) await db.run('INSERT INTO shot_photos (shot_id, data, created_at) VALUES (?, ?, ?)', [id, d, now()]);
+    }
+    await changed('shots');
+    const dir = Number.isFinite(bearing) ? `, Flucht Richtung ${compassName(bearing)}` : '';
+    await notify('all', { title: `Anschuss: ${str(req.body.species, 60) || 'Wild'}`, body: `${req.user.name} hat einen Anschuss markiert (${fmtTime(shotAt)}${dir}).${req.body.note ? ' – ' + str(req.body.note, 100) : ''}`, url: '/#karte', tag: `shot-${id}` }, req.user.id);
+    res.json(await db.get(`${SHOT_SELECT} WHERE s.id = ?`, [id]));
+  }));
+  app.put('/api/shots/:id', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const sh = await db.get('SELECT * FROM shots WHERE id = ?', [req.params.id]);
+    if (!sh) throw httpError(404, 'Nicht gefunden.');
+    if (!canEditShot(sh, req.user)) throw httpError(403, 'Nur der Schütze oder der Admin kann das ändern.');
+    const shotAt = req.body.shot_at ? new Date(req.body.shot_at) : null;
+    let bearing = 'flight_bearing' in req.body ? num(req.body.flight_bearing) : sh.flight_bearing;
+    let fl = 'flight_lat' in req.body ? num(req.body.flight_lat) : sh.flight_lat, fg = 'flight_lng' in req.body ? num(req.body.flight_lng) : sh.flight_lng;
+    const lat = num(req.body.lat) ?? sh.lat, lng = num(req.body.lng) ?? sh.lng;
+    if (Number.isFinite(fl) && Number.isFinite(fg) && ('flight_lat' in req.body || 'flight_lng' in req.body)) bearing = bearingTo(lat, lng, fl, fg);
+    const status = SHOT_STATUS.includes(req.body.status) ? req.body.status : sh.status;
+    await db.run('UPDATE shots SET species = ?, shot_at = ?, lat = ?, lng = ?, flight_bearing = ?, flight_lat = ?, flight_lng = ?, signs = ?, note = ?, status = ?, feature_id = ?, found_lat = ?, found_lng = ? WHERE id = ?', [
+      str(req.body.species ?? sh.species, 60) || sh.species, shotAt && !Number.isNaN(shotAt.getTime()) ? shotAt.toISOString() : sh.shot_at, lat, lng,
+      Number.isFinite(bearing) ? ((bearing % 360) + 360) % 360 : null, Number.isFinite(fl) ? fl : null, Number.isFinite(fg) ? fg : null,
+      str(req.body.signs ?? sh.signs, 300), str(req.body.note ?? sh.note, 1000), status, 'feature_id' in req.body ? num(req.body.feature_id) : sh.feature_id,
+      'found_lat' in req.body ? num(req.body.found_lat) : sh.found_lat, 'found_lng' in req.body ? num(req.body.found_lng) : sh.found_lng, sh.id]);
+    for (const d of (Array.isArray(req.body.photos) ? req.body.photos : []).slice(0, 5)) {
+      if (photoOk(d)) await db.run('INSERT INTO shot_photos (shot_id, data, created_at) VALUES (?, ?, ?)', [sh.id, d, now()]);
+    }
+    await changed('shots');
+    if (status !== sh.status) {
+      const text = { nachsuche: 'Nachsuche läuft', gefunden: 'Stück gefunden – Waidmannsheil!', abgebrochen: 'Nachsuche abgebrochen', offen: 'wieder offen' }[status];
+      await notify('all', { title: `Anschuss ${sh.species}: ${text}`, body: `${req.user.name}: ${text}.`, url: '/#karte', tag: `shot-${sh.id}` }, req.user.id);
+    }
+    res.json(await db.get(`${SHOT_SELECT} WHERE s.id = ?`, [sh.id]));
+  }));
+  app.delete('/api/shots/:id/photos/:pid', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const sh = await db.get('SELECT * FROM shots WHERE id = ?', [req.params.id]);
+    if (!sh) throw httpError(404, 'Nicht gefunden.');
+    if (!canEditShot(sh, req.user)) throw httpError(403, 'Nur der Schütze oder der Admin kann das ändern.');
+    await db.run('DELETE FROM shot_photos WHERE id = ? AND shot_id = ?', [req.params.pid, sh.id]);
+    await changed('shots'); res.json({ ok: true });
+  }));
+  app.delete('/api/shots/:id', requireAuth, wrap(async (req, res) => {
+    const db = await getDb();
+    const sh = await db.get('SELECT * FROM shots WHERE id = ?', [req.params.id]);
+    if (!sh) throw httpError(404, 'Nicht gefunden.');
+    if (!canEditShot(sh, req.user)) throw httpError(403, 'Nur der Schütze oder der Admin kann das löschen.');
+    await db.run('DELETE FROM shots WHERE id = ?', [sh.id]);
+    await changed('shots'); res.json({ ok: true });
   }));
 
   // ---------- Wetter ----------

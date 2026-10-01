@@ -71,11 +71,17 @@
           <button class="tool" data-tool="kamera" title="Wildkamera setzen"><span class="ico ico-kamera"></span>Kamera</button>
           <button class="tool" data-tool="kirrung" title="Kirrung setzen"><span class="ico ico-kirrung"></span>Kirrung</button>
           <button class="tool" data-tool="faehrte" title="Fährte / Wildbeobachtung melden"><span class="ico ico-faehrte"></span>Fährte</button>
+          <button class="tool" data-tool="anschuss" title="Anschuss markieren (Nachsuche)"><span class="ico ico-anschuss"></span>Anschuss</button>
+          <button class="tool" data-tool="messen" title="Entfernung messen"><span class="ico ico-messen"></span>Messen</button>
           <button class="tool" data-tool="grenze" title="Reviergrenze zeichnen"><span class="ico ico-grenze"></span>Grenze</button>
           <button class="tool" data-tool="layer" title="Kartenansicht"><span class="ico ico-layer"></span>Karte</button>
           <button class="tool" data-tool="locate" title="Mein Standort"><span class="ico ico-locate"></span>Ich</button>
         </div>
         <div class="map-hint hidden" id="map-hint"></div>
+        <div class="measure-box hidden" id="measure-box">
+          <div><b id="measure-total">0 m</b><span id="measure-last"></span></div>
+          <div class="row"><button class="btn sm" id="measure-undo">Rückgängig</button><button class="btn sm" id="measure-clear">Neu</button><button class="btn sm primary" id="measure-done">Fertig</button></div>
+        </div>
         <div class="wind-badge" id="wind-badge" title="Aktueller Wind">
           <svg viewBox="0 0 40 40" class="wind-arrow"><g id="wind-arrow-g"><path d="M20 4 L27 22 L20 18 L13 22 Z"/><rect x="18.5" y="18" width="3" height="18" rx="1.5"/></g></svg>
           <div><b id="wind-badge-dir">–</b><span id="wind-badge-speed">–</span></div>
@@ -87,6 +93,8 @@
           <div id="checkin-self"></div>
         </div>
         <div id="active-list" class="active-list"></div>
+        <div id="shots-section" class="hidden"><div class="panel-head" style="margin-top:.8rem"><h2>Nachsuche</h2><span class="muted small" id="shots-count"></span></div>
+        <div id="shots-list" class="active-list"></div></div>
         <div class="panel-head" style="margin-top:.8rem"><h2>Fährten</h2><span class="muted small" id="sightings-count"></span></div>
         <div id="sightings-list" class="active-list"></div>
       </div>
