@@ -1,0 +1,25 @@
+{
+  "name": "revierapp",
+  "version": "1.0.0",
+  "description": "Jagd-Webanwendung: Wetter, Revierkarte, Check-in, Drückjagd-Planung",
+  "main": "server/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node --no-warnings=ExperimentalWarning server/index.js",
+    "dev": "node --no-warnings=ExperimentalWarning --watch server/index.js",
+    "test": "node --no-warnings=ExperimentalWarning --test"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.21.2",
+    "web-push": "^3.6.7",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "leaflet": "^1.9.4",
+    "leaflet-draw": "^1.0.4"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "RevierApp – Jagd & Revier",
+  "short_name": "RevierApp",
+  "description": "Wetter, Revierkarte, Ansitz-Check-in und Drückjagd-Planung für die Jagdgemeinschaft",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#1f3a2a",
+  "theme_color": "#1f3a2a",
+  "lang": "de",
+  "icons": [
+    { "src": "/icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

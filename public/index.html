@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>RevierApp</title>
+<meta name="description" content="Jagd-Webanwendung: Wetter, Revierkarte, Check-in und Drückjagd-Planung">
+<meta name="theme-color" content="#1f3a2a">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;0,700;1,500&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
+<link rel="stylesheet" href="/vendor/leaflet-draw/leaflet.draw.css">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- ===== Anmeldung ===== -->
+<section id="auth" class="auth hidden">
+  <div class="auth-card">
+    <div class="brand">
+      <img src="/icons/icon.svg" alt="" class="brand-icon">
+      <h1>RevierApp</h1>
+      <p class="brand-sub">Wetter · Karte · Ansitz · Drückjagd</p>
+    </div>
+    <form id="auth-form" autocomplete="on">
+      <label>Name<input name="name" required minlength="2" maxlength="40" autocomplete="username" placeholder="z. B. Hans"></label>
+      <label>Passwort<input name="password" type="password" required minlength="4" autocomplete="current-password"></label>
+      <p class="form-error" id="auth-error"></p>
+      <div class="auth-actions">
+        <button type="submit" class="btn primary" data-action="login">Anmelden</button>
+        <button type="submit" class="btn" data-action="register">Neu registrieren</button>
+      </div>
+    </form>
+    <p class="muted small">Alle Jäger des Reviers melden sich hier mit eigenem Namen an. Die Anwendung kann von mehreren Personen gleichzeitig genutzt werden.</p>
+  </div>
+</section>
+
+<!-- ===== App ===== -->
+<div id="app" class="app hidden">
+  <header class="topbar">
+    <div class="topbar-left">
+      <img src="/icons/icon.svg" alt="" class="topbar-icon">
+      <div>
+        <div class="topbar-title" id="revier-name">Mein Revier</div>
+        <div class="topbar-sub" id="topbar-status">—</div>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <div class="online" id="online-users" title="Gerade online"></div>
+      <button class="iconbtn" id="btn-notifications" title="Benachrichtigungen" aria-label="Benachrichtigungen">
+        <svg viewBox="0 0 24 24"><path d="M12 2a6 6 0 0 0-6 6v4l-2 3v1h16v-1l-2-3V8a6 6 0 0 0-6-6zm0 20a3 3 0 0 0 3-3H9a3 3 0 0 0 3 3z"/></svg>
+        <span class="badge hidden" id="notif-badge">0</span>
+      </button>
+      <button class="avatar" id="btn-me" title="Profil"></button>
+    </div>
+  </header>
+
+  <main class="main">
+    <!-- Karte -->
+    <section class="view" id="view-karte">
+      <div class="map-wrap">
+        <div id="map"></div>
+        <div class="map-toolbar">
+          <button class="tool" data-tool="kanzel" title="Kanzel setzen"><span class="ico ico-kanzel"></span>Kanzel</button>
+          <button class="tool" data-tool="kamera" title="Wildkamera setzen"><span class="ico ico-kamera"></span>Kamera</button>
+          <button class="tool" data-tool="kirrung" title="Kirrung setzen"><span class="ico ico-kirrung"></span>Kirrung</button>
+          <button class="tool" data-tool="grenze" title="Reviergrenze zeichnen"><span class="ico ico-grenze"></span>Grenze</button>
+          <button class="tool" data-tool="layer" title="Kartenansicht"><span class="ico ico-layer"></span>Karte</button>
+          <button class="tool" data-tool="locate" title="Mein Standort"><span class="ico ico-locate"></span>Ich</button>
+        </div>
+        <div class="map-hint hidden" id="map-hint"></div>
+        <div class="wind-badge" id="wind-badge" title="Aktueller Wind">
+          <svg viewBox="0 0 40 40" class="wind-arrow"><g id="wind-arrow-g"><path d="M20 4 L27 22 L20 18 L13 22 Z"/><rect x="18.5" y="18" width="3" height="18" rx="1.5"/></g></svg>
+          <div><b id="wind-badge-dir">–</b><span id="wind-badge-speed">–</span></div>
+        </div>
+      </div>
+      <div class="map-panel" id="map-panel">
+        <div class="panel-head">
+          <h2>Im Revier</h2>
+          <div id="checkin-self"></div>
+        </div>
+        <div id="active-list" class="active-list"></div>
+      </div>
+    </section>
+
+    <!-- Wetter -->
+    <section class="view hidden" id="view-wetter">
+      <div class="content" id="weather-content"><p class="muted">Wetter wird geladen …</p></div>
+    </section>
+
+    <!-- Ansitz -->
+    <section class="view hidden" id="view-ansitz">
+      <div class="content">
+        <div class="card" id="checkin-card">
+          <h2>Einchecken</h2>
+          <div class="seg" id="checkin-mode">
+            <button data-mode="kanzel" class="active">Kanzel / Ansitz</button>
+            <button data-mode="pirsch">Pirsch</button>
+          </div>
+          <label id="checkin-stand-label">Kanzel<select id="checkin-stand"></select></label>
+          <label>Notiz (optional)<input id="checkin-note" maxlength="300" placeholder="z. B. bis zum Dunkelwerden"></label>
+          <div class="row">
+            <button class="btn primary" id="btn-checkin">Jetzt einchecken</button>
+            <button class="btn" id="btn-plan-toggle">Für später ankündigen</button>
+          </div>
+          <div id="plan-form" class="plan-form hidden">
+            <label>Geplante Zeit<input type="datetime-local" id="plan-time"></label>
+            <button class="btn primary" id="btn-plan">Ankündigung senden</button>
+            <p class="muted small">Alle anderen Nutzer erhalten eine Push-Nachricht und können bestätigen. Du siehst, wer gelesen und bestätigt hat.</p>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Angekündigte Ansitze</h2>
+          <div id="plans-list"></div>
+        </div>
+        <div class="card">
+          <h2>Letzte Reviergänge</h2>
+          <div id="history-list" class="history"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Drückjagd -->
+    <section class="view hidden" id="view-jagd">
+      <div class="content" id="hunts-content"></div>
+    </section>
+
+    <!-- Einstellungen -->
+    <section class="view hidden" id="view-mehr">
+      <div class="content">
+        <div class="card">
+          <h2>Revier</h2>
+          <label>Reviername<input id="set-revier-name" maxlength="80"></label>
+          <button class="btn" id="btn-save-revier">Speichern</button>
+          <p class="muted small">Der Kartenmittelpunkt wird für die Wetterdaten verwendet. Verschiebe die Karte an dein Revier und tippe auf „Kartenausschnitt als Mittelpunkt speichern“.</p>
+          <button class="btn" id="btn-save-center">Kartenausschnitt als Mittelpunkt speichern</button>
+        </div>
+        <div class="card">
+          <h2>Benachrichtigungen</h2>
+          <p id="push-status" class="muted small"></p>
+          <div class="row">
+            <button class="btn primary" id="btn-push-enable">Push aktivieren</button>
+            <button class="btn" id="btn-push-test">Test senden</button>
+          </div>
+          <p class="muted small">Auf dem iPhone muss die App zuerst über „Teilen → Zum Home-Bildschirm“ installiert werden, damit Push-Nachrichten möglich sind.</p>
+        </div>
+        <div class="card">
+          <h2>Objekte im Revier</h2>
+          <div id="features-list" class="features-list"></div>
+        </div>
+        <div class="card">
+          <h2>Konto</h2>
+          <p>Angemeldet als <b id="me-name"></b></p>
+          <button class="btn danger" id="btn-logout">Abmelden</button>
+        </div>
+        <p class="muted small center">RevierApp · Wetterdaten von Open-Meteo · Karten © OpenStreetMap-Mitwirkende</p>
+      </div>
+    </section>
+  </main>
+
+  <nav class="nav">
+    <button data-view="karte" class="active"><svg viewBox="0 0 24 24"><path d="M3 5l6-2 6 2 6-2v16l-6 2-6-2-6 2V5zm6 0v14m6-12v14"/></svg><span>Karte</span></button>
+    <button data-view="wetter"><svg viewBox="0 0 24 24"><path d="M7 18a4 4 0 0 1-.5-8A6 6 0 0 1 18 9a4 4 0 0 1 0 9H7z"/></svg><span>Wetter</span></button>
+    <button data-view="ansitz"><svg viewBox="0 0 24 24"><path d="M4 21V10l8-7 8 7v11h-5v-6H9v6H4z"/></svg><span>Ansitz</span><em class="dot hidden" id="nav-ansitz-dot"></em></button>
+    <button data-view="jagd"><svg viewBox="0 0 24 24"><path d="M4 4h16v4H4zM6 8v12h12V8M9 12h6M9 16h6"/></svg><span>Drückjagd</span></button>
+    <button data-view="mehr"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg><span>Mehr</span></button>
+  </nav>
+
+  <!-- Benachrichtigungs-Drawer -->
+  <aside class="drawer hidden" id="notif-drawer">
+    <div class="drawer-head"><h2>Benachrichtigungen</h2><button class="iconbtn" id="btn-notif-close" aria-label="Schließen">✕</button></div>
+    <div id="notif-list"></div>
+  </aside>
+
+  <!-- Dialog -->
+  <dialog id="dialog"><div id="dialog-body"></div></dialog>
+  <div class="toast-wrap" id="toasts"></div>
+</div>
+
+<script src="/vendor/leaflet/leaflet.js"></script>
+<script src="/vendor/leaflet-draw/leaflet.draw.js"></script>
+<script src="/app.js" type="module"></script>
+</body>
+</html>

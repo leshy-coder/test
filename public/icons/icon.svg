@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2d4f3a"/><stop offset="1" stop-color="#17291f"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <circle cx="64" cy="64" r="46" fill="none" stroke="#c9a24b" stroke-width="3" opacity=".7"/>
+  <!-- Geweih / Hirsch-Silhouette stilisiert -->
+  <g fill="none" stroke="#e9d9a8" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M44 86 V58 M84 86 V58"/>
+    <path d="M44 58 C38 50 30 48 30 36 M44 50 C36 46 34 40 36 32 M44 42 C40 36 42 30 46 26"/>
+    <path d="M84 58 C90 50 98 48 98 36 M84 50 C92 46 94 40 92 32 M84 42 C88 36 86 30 82 26"/>
+    <path d="M48 86 Q64 100 80 86"/>
+  </g>
+  <circle cx="64" cy="72" r="5" fill="#c9a24b"/>
+</svg>
