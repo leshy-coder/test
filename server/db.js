@@ -95,8 +95,13 @@ async function pgAdapter(url) {
 let dbPromise;
 export function getDb() {
   if (!dbPromise) {
-    const url = process.env.DATABASE_URL || process.env.NETLIFY_DB_URL;
-    dbPromise = url ? pgAdapter(url) : sqliteAdapter();
+    dbPromise = (async () => {
+      let url = process.env.DATABASE_URL || process.env.NETLIFY_DB_URL;
+      if (!url && (globalThis.Netlify || process.env.NETLIFY === 'true')) {
+        try { url = (await import('@netlify/database')).getConnectionString(); process.env.NETLIFY_DB_URL = url; } catch {}
+      }
+      return url ? pgAdapter(url) : sqliteAdapter();
+    })();
     dbPromise.catch(e => { dbPromise = null; throw e; });
   }
   return dbPromise;
