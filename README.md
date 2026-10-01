@@ -43,6 +43,38 @@ docker build -t revierapp .
 docker run -p 3000:3000 -v revierdaten:/app/data revierapp
 ```
 
+## Veröffentlichen (Hosting)
+
+Die App braucht einen dauerhaft laufenden Node-Server (WebSockets, SQLite-Datei). Reine Static-Hoster wie Netlify oder GitHub Pages reichen dafür nicht. Zwei vorbereitete Wege:
+
+### Render (empfohlen, wenige Klicks)
+
+1. Auf https://render.com anmelden und GitHub verbinden.
+2. „New +“ → „Blueprint“ → dieses Repository und den Branch wählen. Render liest `render.yaml`.
+3. Unter Environment die Variable `VAPID_SUBJECT` auf die eigene E-Mail setzen (`mailto:…`).
+4. „Apply“. Nach dem Build ist die App unter `https://revierapp-xxxx.onrender.com` erreichbar, mit HTTPS, also Push-fähig.
+
+Die SQLite-Datenbank und die Push-Schlüssel liegen auf der Persistent Disk unter `/var/data` und überleben Neustarts und Deploys. Persistent Disks gibt es ab dem Starter-Plan. Auf dem Free-Plan läuft die App ebenfalls, verliert aber bei jedem Deploy die Daten und schläft nach 15 Minuten ohne Zugriffe ein.
+
+### Fly.io (kostenloses Kontingent mit Volume)
+
+```bash
+curl -L https://fly.io/install.sh | sh
+fly auth login
+fly launch --copy-config --no-deploy     # App-Namen wählen, Region fra
+fly volumes create revierdaten --region fra --size 1
+fly deploy
+fly open
+```
+
+`fly.toml` hält eine Instanz dauerhaft am Laufen und hängt das Volume unter `/app/data` ein.
+
+### Nach dem Deploy
+
+- Jeder Jäger öffnet die URL, registriert sich und aktiviert unter „Mehr“ die Push-Benachrichtigungen.
+- Auf dem iPhone zuerst „Teilen → Zum Home-Bildschirm“, dann Push aktivieren.
+- Unter „Mehr“ die Karte an das Revier schieben und „Kartenausschnitt als Mittelpunkt speichern“, damit das Wetter für das Revier gilt.
+
 ## Tests
 
 ```bash

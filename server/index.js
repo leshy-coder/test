@@ -66,6 +66,9 @@ function fmtTime(iso) {
   return d.toLocaleString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: process.env.TZ || 'Europe/Berlin' });
 }
 
+// ---------- Health ----------
+app.get('/api/health', (req, res) => res.json({ ok: true, uptime: Math.round(process.uptime()) }));
+
 // ---------- Auth ----------
 app.post('/api/auth/register', wrap((req, res) => res.json(register(req.body.name, req.body.password))));
 app.post('/api/auth/login', wrap((req, res) => res.json(login(req.body.name, req.body.password))));

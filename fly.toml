@@ -1,0 +1,41 @@
+# Fly.io: https://fly.io/docs/
+#   fly launch --copy-config --no-deploy   (App-Namen wählen)
+#   fly volumes create revierdaten --region fra --size 1
+#   fly deploy
+app = "revierapp"
+primary_region = "fra"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  DATA_DIR = "/app/data"
+  TZ = "Europe/Berlin"
+  VAPID_SUBJECT = "mailto:revier@example.com"
+
+[mounts]
+  source = "revierdaten"
+  destination = "/app/data"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = false   # WebSockets und Push brauchen eine dauerhaft laufende Instanz
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 200
+    hard_limit = 250
+
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "10s"
+  method = "GET"
+  path = "/api/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

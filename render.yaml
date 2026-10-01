@@ -1,0 +1,25 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# Im Render-Dashboard: "New +" -> "Blueprint" -> dieses Repository wählen.
+services:
+  - type: web
+    name: revierapp
+    runtime: node
+    region: frankfurt
+    plan: starter            # Persistent Disk benötigt mindestens den Starter-Plan
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    disk:
+      name: revierdaten
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATA_DIR
+        value: /var/data
+      - key: TZ
+        value: Europe/Berlin
+      - key: VAPID_SUBJECT
+        value: mailto:revier@example.com   # eigene E-Mail eintragen
