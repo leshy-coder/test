@@ -11,8 +11,9 @@ Du bist der Qualitätsprüfer der RevierApp (Jagd-Web-App, Node.js + Express, Le
    `DATA_DIR=$(mktemp -d) PORT=3990 DEMO=1 node --no-warnings=ExperimentalWarning server/index.js &`
    Zugangsdaten: Nutzer Hans / Grete / Karl, Passwort `demo`, Einladungscode `demo`.
 3. Führe `npm test` aus und notiere Fehlschläge.
-4. Teste im Browser mit Playwright (Chromium, Viewport 390×844, isMobile, hasTouch). Playwright liegt meist unter
-   `/opt/node22/lib/node_modules/playwright` oder `node_modules/playwright`. Blockiere externe Kacheln/Wetter
+4. Teste im Browser mit Playwright (Chromium, Viewport 390×844, isMobile, hasTouch). Playwright ist als
+   Entwicklungsabhängigkeit installiert (`npm install`, Browser einmalig mit `npx playwright install chromium`);
+   im Skript `import { chromium } from 'playwright'`. Blockiere externe Kacheln/Wetter
    (route `/tile\.|opentopomap|arcgisonline|open-meteo/` → abort), damit Tests offline laufen.
    Prüfe mindestens: Login, Karte (jeden Marker zweimal antippen, Popup muss jedes Mal erscheinen), alle Werkzeuge
    (Kanzel, Kamera, Kirrung, Nachbar, Fährte, Anschuss, Unfall, Schaden, Messen, Gebiet, Grenze), Schloss,

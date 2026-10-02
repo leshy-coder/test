@@ -137,6 +137,20 @@ npm test
 
 Mit gesetzter `DATABASE_URL` laufen dieselben Tests gegen Postgres. Die Tests starten den Server mit einer temporären Datenbank und prüfen Registrierung, Revierobjekte, Ein-/Auschecken mit Benachrichtigungen, Ankündigungen mit Lese-/Bestätigungsquittung, Drückjagd-Planung und Push-Abonnements.
 
+### Browser-Tests, Handbuch und Qualitätskontrolle
+
+Für Screenshots und Oberflächentests wird Playwright mit Chromium verwendet. Einmalig einrichten:
+
+```bash
+npm install
+npx playwright install chromium
+```
+
+Danach:
+
+- `npm run handbuch` erzeugt das Anwenderhandbuch `docs/RevierApp-Handbuch.pdf` neu (Demo-Server, Screenshots, PDF; dauert einige Minuten).
+- `/qa-zyklus` in Claude Code lässt den Prüf-Agenten (`.claude/agents/qa-tester.md`) die App testen und den Bugfix-Agenten (`.claude/agents/bugfixer.md`) die gefundenen Fehler beheben; Berichte liegen unter `docs/qa/`.
+
 ## Technik
 
 - Backend: Node.js, Express, `web-push`; Datenbank wahlweise `node:sqlite` (lokal) oder Postgres (`@netlify/neon` bzw. `pg`); lokal zusätzlich `ws` für sofortige Updates
