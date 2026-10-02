@@ -449,8 +449,8 @@ function renderAreas() {
       x.on('click', ev => {
         if (markerClickDuringPlacement(ev.latlng)) return;
         if (activeTool === 'gebiet' || activeTool === 'grenze') return;
-        x.bindPopup(`<h3 style="color:${esc(a.color)}">${esc(a.name)}</h3>${a.notes ? `<div class="muted small">${esc(a.notes)}</div>` : ''}<div class="muted small">Fläche ca. ${fmtArea(x)}</div>
-          <div class="row"><button class="btn sm" data-act="edit">Bearbeiten</button><button class="btn sm" data-act="shape">Form ändern</button><button class="btn sm danger" data-act="del">Löschen</button></div>`).openPopup();
+        openMarkerPopup(x, `<h3 style="color:${esc(a.color)}">${esc(a.name)}</h3>${a.notes ? `<div class="muted small">${esc(a.notes)}</div>` : ''}<div class="muted small">Fläche ca. ${fmtArea(x)}</div>
+          <div class="row"><button class="btn sm" data-act="edit">Bearbeiten</button><button class="btn sm" data-act="shape">Form ändern</button><button class="btn sm danger" data-act="del">Löschen</button></div>`);
         const pop = x.getPopup().getElement();
         $('[data-act="edit"]', pop)?.addEventListener('click', () => { map.closePopup(); areaDialog(a); });
         $('[data-act="shape"]', pop)?.addEventListener('click', () => { map.closePopup(); setTool('gebiet'); toast('Links „Bearbeiten“ wählen, Eckpunkte ziehen, dann „Save“'); });
@@ -492,6 +492,14 @@ function windClass(f) {
 }
 const windSuits = f => windClass(f) === 'wind-ok';
 function checkAge(f) { if (!f.last_check) return null; return Math.floor((Date.now() - new Date(f.last_check).getTime()) / 86400e3); }
+// Popup an einem Marker öffnen. Leaflets eigener Klick-Umschalter wird entfernt: sonst öffnet unser Klick-Handler das Popup
+// und Leaflet schließt es im selben Klick wieder, sodass ein zweiter Tipp auf denselben Marker scheinbar nichts tut.
+function openMarkerPopup(layer, html, opts) {
+  layer.bindPopup(html, opts);
+  layer.off('click', layer._openPopup, layer);
+  layer.openPopup();
+  return layer.getPopup().getElement();
+}
 function openFeaturePopup(marker, f, occ) {
   const planned = state.plans.filter(p => p.status === 'offen' && p.feature_id === f.id);
   const service = f.interval_days ? `<div class="small ${serviceOverdue(f) ? 'season-closed' : 'season-ok'}">${f.kind === 'kamera' ? 'Kartentausch' : 'Beschickung'} alle ${f.interval_days} Tage · zuletzt ${f.last_service ? ageText(f.last_service) : 'nie'}${serviceOverdue(f) ? ' · fällig!' : ''}</div>` : '';
@@ -509,8 +517,7 @@ function openFeaturePopup(marker, f, occ) {
       ${f.kind === 'kanzel' ? `<button class="btn sm" data-act="check">Prüfung erledigt</button>` : ''}
       <button class="btn sm" data-act="edit">Bearbeiten</button>
     </div>`;
-  marker.bindPopup(html).openPopup();
-  const pop = marker.getPopup().getElement();
+  const pop = openMarkerPopup(marker, html);
   $('[data-act="checkin"]', pop)?.addEventListener('click', () => { map.closePopup(); doCheckin('kanzel', f.id, ''); });
   $('[data-act="plan"]', pop)?.addEventListener('click', () => { map.closePopup(); location.hash = 'ansitz'; state.checkinMode = 'kanzel'; renderCheckinForm(); $('#checkin-stand').value = f.id; $('#plan-form').classList.remove('hidden'); });
   $('[data-act="edit"]', pop)?.addEventListener('click', () => { map.closePopup(); editFeature(f.id); });
@@ -802,7 +809,7 @@ function renderShots() {
 async function openShotPopup(marker, sh) {
   const mine = sh.user_id === state.me.id || state.me.is_admin;
   const signs = sh.signs ? sh.signs.split(',').map(x => `<span class="chip">${esc(x.trim())}</span>`).join(' ') : '';
-  marker.bindPopup(`<h3>Anschuss ${esc(sh.species)} <span class="status-tag ${SHOT_STATUS[sh.status][1]}">${SHOT_STATUS[sh.status][0]}</span></h3>
+  openMarkerPopup(marker, `<h3>Anschuss ${esc(sh.species)} <span class="status-tag ${SHOT_STATUS[sh.status][1]}">${SHOT_STATUS[sh.status][0]}</span></h3>
     <div>${fmtDT(sh.shot_at)} (${ageText(sh.shot_at)}) · ${esc(sh.user_name || '')}${sh.feature_name ? ' · von ' + esc(sh.feature_name) : ''}</div>
     <div class="small">${parsePathClient(sh).length ? `Fluchtweg ${parsePathClient(sh).length} Punkt${parsePathClient(sh).length > 1 ? 'e' : ''}, Richtung ${Math.round(sh.flight_bearing)}° ${compass(sh.flight_bearing)}` : '<span class="muted">Kein Fluchtweg eingetragen</span>'}${sh.track_m > 0 ? ` · Nachsuche ${fmtDist(sh.track_m)} gelaufen` : ''}</div>
     ${signs ? `<div class="receipts">${signs}</div>` : ''}${sh.note ? `<div class="muted small">„${esc(sh.note)}“</div>` : ''}
@@ -811,7 +818,7 @@ async function openShotPopup(marker, sh) {
       ${mine && sh.status !== 'gefunden' ? `<button class="btn sm" data-act="status" data-val="${sh.status === 'nachsuche' ? 'gefunden' : 'nachsuche'}">${sh.status === 'nachsuche' ? 'Gefunden' : 'Nachsuche starten'}</button>` : ''}
       ${sh.status !== 'gefunden' && sh.status !== 'abgebrochen' ? `<button class="btn sm" data-act="track">${track?.shotId === sh.id ? 'Aufzeichnung läuft' : 'Nachsuche aufzeichnen'}</button>` : ''}
       ${mine ? `<button class="btn sm" data-act="flucht">${parsePathClient(sh).length ? 'Fluchtweg bearbeiten' : 'Fluchtweg setzen'}</button><button class="btn sm" data-act="edit">Bearbeiten</button><button class="btn sm danger" data-act="del">Löschen</button>` : ''}
-    </div>`, { maxWidth: 320 }).openPopup();
+    </div>`, { maxWidth: 320 });
   if (sh.track_m > 0) loadTracksFor(sh.id);
   const popEl = marker.getPopup().getElement();
   $('[data-act="track"]', popEl)?.addEventListener('click', () => { map.closePopup(); if (track?.shotId !== sh.id) startTrack(sh); });
@@ -1012,9 +1019,9 @@ function renderSightingMarkers() {
     m.on('click', () => {
       if (markerClickDuringPlacement(m.getLatLng())) return;
       const mine = sg.user_id === state.me.id || state.me.is_admin;
-      m.bindPopup(`<h3>${esc(sg.species)}</h3><div>${esc(SIGHTING_KINDS[sg.kind] || sg.kind)} · ${fmtDT(sg.observed_at)} (${ageText(sg.observed_at)})</div>
+      openMarkerPopup(m, `<h3>${esc(sg.species)}</h3><div>${esc(SIGHTING_KINDS[sg.kind] || sg.kind)} · ${fmtDT(sg.observed_at)} (${ageText(sg.observed_at)})</div>
         ${sg.note ? `<div class="muted small">„${esc(sg.note)}“</div>` : ''}<div class="muted small">gemeldet von ${esc(sg.user_name || 'unbekannt')}</div>
-        ${mine ? `<div class="row"><button class="btn sm" data-act="edit">Bearbeiten</button><button class="btn sm danger" data-act="del">Löschen</button></div>` : ''}`).openPopup();
+        ${mine ? `<div class="row"><button class="btn sm" data-act="edit">Bearbeiten</button><button class="btn sm danger" data-act="del">Löschen</button></div>` : ''}`);
       const pop = m.getPopup().getElement();
       $('[data-act="edit"]', pop)?.addEventListener('click', () => { map.closePopup(); sightingDialog(sg); });
       $('[data-act="del"]', pop)?.addEventListener('click', async () => { if (confirm('Meldung löschen?')) { map.closePopup(); await api('/sightings/' + sg.id, { method: 'DELETE' }); } });
@@ -1553,12 +1560,12 @@ function renderIncidentMarkers() {
 }
 async function openIncidentPopup(marker, i) {
   const mine = i.user_id === state.me.id || state.me.is_admin;
-  marker.bindPopup(`<h3>${i.kind === 'wildschaden' ? 'Wildschaden' : 'Wildunfall'} <span class="status-tag ${INCIDENT_STATUS[i.status]?.[1] || ''}">${INCIDENT_STATUS[i.status]?.[0] || i.status}</span></h3>
+  openMarkerPopup(marker, `<h3>${i.kind === 'wildschaden' ? 'Wildschaden' : 'Wildunfall'} <span class="status-tag ${INCIDENT_STATUS[i.status]?.[1] || ''}">${INCIDENT_STATUS[i.status]?.[0] || i.status}</span></h3>
     <div>${fmtDT(i.happened_at)}${i.species ? ' · ' + esc(i.species) : ''} · ${esc(i.user_name || '')}</div>
     <div class="small">${i.kind === 'wildschaden' ? `${i.crop ? 'Kultur: ' + esc(i.crop) : ''}${i.farmer ? ' · ' + esc(i.farmer) : ''}${i.area_ha ? ' · ' + i.area_ha + ' ha' : ''}` : `${i.road ? esc(i.road) : ''}${i.police_ref ? ' · Az. ' + esc(i.police_ref) : ''}`}</div>
     ${i.note ? `<div class="muted small">„${esc(i.note)}“</div>` : ''}<div class="photo-grid" id="inc-photos-${i.id}"></div>
     <div class="row"><select data-status style="width:auto;margin:0;padding:.3rem">${Object.entries(INCIDENT_STATUS).map(([k, [v]]) => `<option value="${k}" ${k === i.status ? 'selected' : ''}>${v}</option>`).join('')}</select>
-      <button class="btn sm" data-act="edit">Bearbeiten</button><button class="btn sm" data-act="print">PDF</button>${mine ? `<button class="btn sm danger" data-act="del">Löschen</button>` : ''}</div>`, { maxWidth: 320 }).openPopup();
+      <button class="btn sm" data-act="edit">Bearbeiten</button><button class="btn sm" data-act="print">PDF</button>${mine ? `<button class="btn sm danger" data-act="del">Löschen</button>` : ''}</div>`, { maxWidth: 320 });
   const pop = marker.getPopup().getElement();
   $('[data-status]', pop).onchange = e => act2(async () => { await api('/incidents/' + i.id, { method: 'PUT', body: { status: e.target.value } }); map.closePopup(); });
   $('[data-act="edit"]', pop)?.addEventListener('click', () => { map.closePopup(); incidentDialog(i); });
