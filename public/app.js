@@ -9,7 +9,7 @@ const state = {
   revier: { name: 'Mein Revier', center: { lat: 51.1657, lng: 10.4515, zoom: 6 }, boundaries: [], features: [] },
   checkins: { active: [], history: [] }, sightings: [], shots: [], areas: [], events: [], incidents: [], contacts: [], tasks: [], seasons: [], seasonsNote: '', harvest: null, mehrPage: null,
   unlocked: localStorage.getItem('markersUnlocked') === '1',
-  layerFilter: Object.assign({ kanzel: true, kamera: true, kirrung: true, sonstiges: true, labels: true, sightings: true, shots: true, areas: true, grenze: true, tracks: true, incidents: true }, JSON.parse(localStorage.getItem('layerFilter') || '{}')),
+  layerFilter: Object.assign({ kanzel: true, kamera: true, kirrung: true, nachbar: true, sonstiges: true, labels: true, sightings: true, shots: true, areas: true, grenze: true, tracks: true, incidents: true }, JSON.parse(localStorage.getItem('layerFilter') || '{}')),
   plans: [], hunts: [], hunt: null, huntTab: 'uebersicht',
   weather: null, notifications: [],
   view: 'karte', checkinMode: 'kanzel',
@@ -193,6 +193,7 @@ function showView(v) {
 async function loadUsers() { state.users = await api('/users'); }
 
 // ---------- Revier / Map ----------
+let drawHandler = null;
 let map, layers = {}, boundaryLayer, areaLayer, featureLayer, checkinLayer, sightingLayer, shotLayer, trackLayer, measureLayer, pathLayer, incidentLayer, drawControl, activeTool = null, meMarker, pendingFlightShot = null;
 // Rendering bündeln: mehrere Datenänderungen kurz hintereinander führen nur zu einem Neuzeichnen
 const renderQueue = new Set(); let renderScheduled = false;
@@ -203,7 +204,7 @@ function applyLayerFilter() {
   for (const [name, on] of Object.entries(want)) { const l = { boundaryLayer, areaLayer, sightingLayer, shotLayer, trackLayer, incidentLayer }[name]; if (!l) continue; if (on && !map.hasLayer(l)) l.addTo(map); if (!on && map.hasLayer(l)) map.removeLayer(l); }
   localStorage.setItem('layerFilter', JSON.stringify(f));
 }
-const featureKinds = { kanzel: 'Kanzel', kamera: 'Wildkamera', kirrung: 'Kirrung', sonstiges: 'Sonstiges' };
+const featureKinds = { kanzel: 'Kanzel', kamera: 'Wildkamera', kirrung: 'Kirrung', nachbar: 'Reviernachbar', sonstiges: 'Sonstiges' };
 
 function initMap() {
   if (map) return;
@@ -267,6 +268,7 @@ function setTool(tool) {
   activeTool = tool;
   $$('.map-toolbar .tool').forEach(b => b.classList.toggle('active', b.dataset.tool === tool));
   const hint = $('#map-hint');
+  if (drawHandler) { try { drawHandler.disable(); } catch {} drawHandler = null; }
   if (drawControl) { map.removeControl(drawControl); drawControl = null; }
   if (tool !== 'messen') $('#measure-box').classList.add('hidden');
   if (tool !== 'flucht') { pendingFlightShot = null; $('#path-box').classList.add('hidden'); pathLayer.clearLayers(); pathPoints = []; }
@@ -283,6 +285,10 @@ function setTool(tool) {
       edit: { featureGroup: isArea ? areaLayer : boundaryLayer },
     });
     map.addControl(drawControl);
+    // Zeichnen direkt starten: Eckpunkte antippen, zum Abschluss ersten Punkt erneut antippen oder „Fertig“
+    drawHandler = new L.Draw.Polygon(map, drawControl.options.draw.polygon);
+    drawHandler.enable();
+    hint.textContent = isArea ? 'Gebiet: Eckpunkte antippen, zum Abschließen ersten Punkt erneut antippen' : 'Grenze: Eckpunkte antippen, zum Abschließen ersten Punkt erneut antippen';
   } else if (tool === 'faehrte') {
     hint.textContent = 'Tippe auf die Karte an die Stelle der Fährte oder Beobachtung';
     $('#map').style.cursor = 'crosshair';
@@ -318,7 +324,7 @@ function setLocked(locked) {
   scheduleRender(renderMapFeatures); scheduleRender(renderSightingMarkers); scheduleRender(renderShotMarkers); scheduleRender(renderIncidentMarkers);
 }
 const canDrag = own => !!state.unlocked && own;
-const PLACEMENT_TOOLS = ['messen', 'faehrte', 'anschuss', 'flucht', 'fund', 'kanzel', 'kamera', 'kirrung', 'unfall', 'schaden'];
+const PLACEMENT_TOOLS = ['messen', 'faehrte', 'anschuss', 'flucht', 'fund', 'kanzel', 'kamera', 'kirrung', 'nachbar', 'unfall', 'schaden'];
 // ---- Ebenen-Menü: Kartenansicht + Filter ----
 function showLayerMenuV2() {
   if ($('.layer-menu')) return $('.layer-menu').remove();
@@ -328,7 +334,7 @@ function showLayerMenuV2() {
   const f = state.layerFilter;
   const cb = (k, label) => `<label><input type="checkbox" data-filter="${k}" ${f[k] ? 'checked' : ''}>${label}</label>`;
   menu.innerHTML = `<h4>Karte</h4>${Object.entries(names).map(([k, v]) => `<button data-layer="${k}" class="${k === current ? 'active' : ''}">${v}</button>`).join('')}
-    <h4>Anzeigen</h4>${cb('kanzel', 'Kanzeln')}${cb('kamera', 'Wildkameras')}${cb('kirrung', 'Kirrungen')}${cb('sonstiges', 'Sonstige Punkte')}${cb('labels', 'Beschriftungen')}
+    <h4>Anzeigen</h4>${cb('kanzel', 'Kanzeln')}${cb('kamera', 'Wildkameras')}${cb('kirrung', 'Kirrungen')}${cb('nachbar', 'Reviernachbarn')}${cb('sonstiges', 'Sonstige Punkte')}${cb('labels', 'Beschriftungen')}
     ${cb('sightings', 'Fährten')}${cb('shots', 'Anschüsse / Nachsuche')}${cb('tracks', 'Nachsuche-Strecken')}${cb('incidents', 'Wildunfälle / Wildschäden')}${cb('areas', 'Gebiete')}${cb('grenze', 'Reviergrenze')}`;
   $$('button[data-layer]', menu).forEach(b => b.onclick = () => {
     Object.values(layers).forEach(l => map.removeLayer(l));
@@ -344,7 +350,7 @@ function markerClickDuringPlacement(latlng) {
   return true;
 }
 async function onMapClick(e) {
-  if (!activeTool || activeTool === 'grenze') return;
+  if (!activeTool || activeTool === 'grenze' || activeTool === 'gebiet') return;
   if (activeTool === 'messen') return addMeasurePoint(e.latlng);
   if (activeTool === 'faehrte') { setTool(null); return sightingDialog({ lat: e.latlng.lat, lng: e.latlng.lng }); }
   if (activeTool === 'anschuss') { setTool(null); return shotDialog({ lat: e.latlng.lat, lng: e.latlng.lng }); }
@@ -417,11 +423,12 @@ function renderMapFeatures() {
     featureLayer.addLayer(m);
   }
   if (firstFit) {
-    firstFit = false;
-    const all = new L.FeatureGroup([boundaryLayer, featureLayer]);
-    const bounds = all.getBounds();
-    if (bounds.isValid()) map.fitBounds(bounds.pad(0.15));
-    else map.setView([state.revier.center.lat, state.revier.center.lng], state.revier.center.zoom || 6);
+    const c = state.revier.center;
+    if (c && c.zoom >= 10) { firstFit = false; map.setView([c.lat, c.lng], c.zoom); }
+    else {
+      const bounds = new L.FeatureGroup([boundaryLayer, featureLayer]).getBounds();
+      if (bounds.isValid()) { firstFit = false; map.fitBounds(bounds.pad(0.15)); }
+    }
   }
   renderCheckinMarkers();
 }
@@ -487,7 +494,8 @@ function openFeaturePopup(marker, f, occ) {
   const service = f.interval_days ? `<div class="small ${serviceOverdue(f) ? 'season-closed' : 'season-ok'}">${f.kind === 'kamera' ? 'Kartentausch' : 'Beschickung'} alle ${f.interval_days} Tage · zuletzt ${f.last_service ? ageText(f.last_service) : 'nie'}${serviceOverdue(f) ? ' · fällig!' : ''}</div>` : '';
   const wind = f.kind === 'kanzel' && f.wind_dirs ? `<div class="small ${windClass(f) === 'wind-ok' ? 'season-ok' : windClass(f) === 'wind-bad' ? 'season-closed' : ''}">Guter Wind aus ${esc(f.wind_dirs.replace(/,/g, ', '))}${state.weather?.current ? ` · aktuell ${compass8(state.weather.current.wind_direction_10m)} ${windClass(f) === 'wind-ok' ? '✓ passt' : '✕ passt nicht'}` : ''}</div>` : '';
   const check = f.kind === 'kanzel' ? `<div class="small ${checkAge(f) === null || checkAge(f) > 365 ? 'season-closed' : 'season-ok'}">Standsicherheitsprüfung: ${checkAge(f) === null ? 'keine dokumentiert' : `vor ${checkAge(f)} Tagen`}${checkAge(f) === null || checkAge(f) > 365 ? ' · fällig' : ''}</div>` : '';
-  const html = `<h3>${esc(f.name)}</h3><div class="muted small">${featureKinds[f.kind]}${f.notes ? ' · ' + esc(f.notes) : ''}</div>${service}${wind}${check}
+  const phone = f.phone ? `<div class="row" style="margin-top:.3rem"><a class="btn sm primary" href="tel:${esc(f.phone.replace(/\s+/g, ''))}">📞 ${esc(f.phone)}</a></div>` : '';
+  const html = `<h3>${esc(f.name)}</h3><div class="muted small">${featureKinds[f.kind]}${f.notes ? ' · ' + esc(f.notes) : ''}</div>${phone}${service}${wind}${check}
     ${occ ? `<p><b style="color:var(--danger)">Besetzt:</b> ${esc(occ.user_name)} (${ago(occ.started_at)})</p>` : ''}
     ${planned.map(p => `<p class="small">Angekündigt: ${esc(p.user_name)} ${fmtDT(p.planned_at)}</p>`).join('')}
     <div class="row">
@@ -517,13 +525,14 @@ function editFeature(id) {
   openDialog(`<h2>${featureKinds[f.kind]} bearbeiten</h2>
     <label>Name<input id="f-name" value="${esc(f.name)}" maxlength="80"></label>
     <label>Art<select id="f-kind">${Object.entries(featureKinds).map(([k, v]) => `<option value="${k}" ${k === f.kind ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+    <label>Telefon${f.kind === 'nachbar' ? ' des Reviernachbarn' : ' (optional)'}<input id="f-phone" type="tel" maxlength="40" value="${esc(f.phone || '')}" placeholder="z. B. 0172 1234567"></label>
     <label>Notizen<textarea id="f-notes" maxlength="1000">${esc(f.notes)}</textarea></label>
     <label id="f-interval-l" class="${f.kind === 'kirrung' || f.kind === 'kamera' ? '' : 'hidden'}">${f.kind === 'kamera' ? 'Kartentausch / Kontrolle alle … Tage' : 'Beschickung alle … Tage'}<input id="f-interval" type="number" min="1" max="365" value="${f.interval_days || ''}" placeholder="z. B. 7 (leer = keine Erinnerung)"></label>
     <div id="f-wind-l" class="${f.kind === 'kanzel' ? '' : 'hidden'}"><label>Guter Wind aus Richtung (Wind weht von …)</label><div class="signs">${COMPASS8.map(d => `<label><input type="checkbox" name="f-wind" value="${d}" ${(f.wind_dirs || '').split(',').includes(d) ? 'checked' : ''}>${d}</label>`).join('')}</div></div>
     <p class="muted small">Position: ${f.lat.toFixed(5)}, ${f.lng.toFixed(5)} – Marker auf der Karte lässt sich verschieben.</p>
     <div class="row"><button class="btn primary" id="f-save">Speichern</button><button class="btn danger" id="f-del">Löschen</button><button class="btn" data-close>Abbrechen</button></div>`, d => {
     $('#f-kind', d).onchange = () => { const k = $('#f-kind', d).value; $('#f-interval-l', d).classList.toggle('hidden', !(k === 'kirrung' || k === 'kamera')); $('#f-wind-l', d).classList.toggle('hidden', k !== 'kanzel'); };
-    $('#f-save', d).onclick = async () => { await api('/features/' + f.id, { method: 'PUT', body: { name: $('#f-name', d).value, kind: $('#f-kind', d).value, notes: $('#f-notes', d).value, interval_days: $('#f-interval', d).value || null, wind_dirs: $$('input[name=f-wind]:checked', d).map(x => x.value).join(',') } }); closeDialog(); };
+    $('#f-save', d).onclick = async () => { await api('/features/' + f.id, { method: 'PUT', body: { name: $('#f-name', d).value, kind: $('#f-kind', d).value, notes: $('#f-notes', d).value, phone: $('#f-phone', d).value, interval_days: $('#f-interval', d).value || null, wind_dirs: $$('input[name=f-wind]:checked', d).map(x => x.value).join(',') } }); closeDialog(); };
     $('#f-del', d).onclick = async () => { if (confirm(`„${f.name}“ wirklich löschen?`)) { await api('/features/' + f.id, { method: 'DELETE' }); closeDialog(); } };
   });
 }
@@ -804,9 +813,11 @@ async function openShotPopup(marker, sh) {
   const popEl = marker.getPopup().getElement();
   $('[data-act="track"]', popEl)?.addEventListener('click', () => { map.closePopup(); if (track?.shotId !== sh.id) startTrack(sh); });
   const gespanne = state.contacts.filter(c => c.role === 'nachsuche' && c.phone);
-  if (gespanne.length && sh.status !== 'gefunden') {
+  const nachbarn = state.revier.features.filter(f => f.kind === 'nachbar' && f.phone).map(f => ({ ...f, d: L.latLng(sh.lat, sh.lng).distanceTo([f.lat, f.lng]) })).sort((a, b) => a.d - b.d).slice(0, 2);
+  if ((gespanne.length || nachbarn.length) && sh.status !== 'gefunden') {
     const div = document.createElement('div'); div.className = 'row'; div.style.marginTop = '.4rem';
-    div.innerHTML = gespanne.map(c => `<a class="btn sm primary" href="tel:${esc(c.phone.replace(/\s+/g, ''))}">📞 ${esc(c.name)}</a>`).join('');
+    div.innerHTML = gespanne.map(c => `<a class="btn sm primary" href="tel:${esc(c.phone.replace(/\s+/g, ''))}">📞 ${esc(c.name)}</a>`).join('')
+      + nachbarn.map(f => `<a class="btn sm" href="tel:${esc(f.phone.replace(/\s+/g, ''))}" title="Reviernachbar, ${fmtDist(f.d)} entfernt">📞 ${esc(f.name)} (${fmtDist(f.d)})</a>`).join('');
     $('.leaflet-popup-content', popEl)?.appendChild(div);
   }
   const pop = marker.getPopup().getElement();

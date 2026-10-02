@@ -11,7 +11,7 @@ import { getWeather } from './weather.js';
 const wrap = fn => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 const str = (v, max = 500) => String(v ?? '').trim().slice(0, max);
 const num = v => (v === null || v === undefined || v === '' ? null : Number(v));
-const KINDS = ['kanzel', 'kamera', 'kirrung', 'sonstiges'];
+const KINDS = ['kanzel', 'kamera', 'kirrung', 'nachbar', 'sonstiges'];
 const ROLES = ['jagdleiter', 'schuetze', 'treiber', 'hundefuehrer', 'ansteller', 'helfer'];
 const HUNT_TYPES = ['drueckjagd', 'ansitz', 'buschieren', 'vogeljagd', 'frettieren', 'fallenjagd', 'revierarbeit', 'sonstiges'];
 const HUNT_STATUS = ['planung', 'bestaetigt', 'abgeschlossen', 'abgesagt'];
@@ -180,9 +180,9 @@ export function createApp({ onChange = () => {} } = {}) {
     let name = str(req.body.name, 80);
     if (!name) {
       const c = Number((await db.get('SELECT COUNT(*) AS c FROM features WHERE kind = ?', [kind])).c) + 1;
-      name = { kanzel: `Kanzel ${c}`, kamera: `Wildkamera ${c}`, kirrung: `Kirrung ${c}`, sonstiges: `Punkt ${c}` }[kind];
+      name = { kanzel: `Kanzel ${c}`, kamera: `Wildkamera ${c}`, kirrung: `Kirrung ${c}`, nachbar: `Reviernachbar ${c}`, sonstiges: `Punkt ${c}` }[kind];
     }
-    const id = await db.insert('INSERT INTO features (kind, name, lat, lng, notes, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [kind, name, lat, lng, str(req.body.notes, 1000), req.user.id, now()]);
+    const id = await db.insert('INSERT INTO features (kind, name, lat, lng, notes, phone, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [kind, name, lat, lng, str(req.body.notes, 1000), str(req.body.phone, 40), req.user.id, now()]);
     await changed('revier'); res.json(await db.get('SELECT * FROM features WHERE id = ?', [id]));
   }));
   app.put('/api/features/:id', requireAuth, wrap(async (req, res) => {
@@ -190,10 +190,11 @@ export function createApp({ onChange = () => {} } = {}) {
     const f = await db.get('SELECT * FROM features WHERE id = ?', [req.params.id]);
     if (!f) throw httpError(404, 'Nicht gefunden.');
     const DIRS = ['N', 'NO', 'O', 'SO', 'S', 'SW', 'W', 'NW'];
-    await db.run('UPDATE features SET name = ?, notes = ?, lat = ?, lng = ?, kind = ?, interval_days = ?, wind_dirs = ? WHERE id = ?', [
+    await db.run('UPDATE features SET name = ?, notes = ?, lat = ?, lng = ?, kind = ?, interval_days = ?, wind_dirs = ?, phone = ? WHERE id = ?', [
       str(req.body.name ?? f.name, 80) || f.name, str(req.body.notes ?? f.notes, 1000), num(req.body.lat) ?? f.lat, num(req.body.lng) ?? f.lng,
       KINDS.includes(req.body.kind) ? req.body.kind : f.kind, 'interval_days' in req.body ? num(req.body.interval_days) : f.interval_days,
-      'wind_dirs' in req.body ? String(req.body.wind_dirs || '').split(',').map(x => x.trim().toUpperCase()).filter(x => DIRS.includes(x)).join(',') : f.wind_dirs, f.id]);
+      'wind_dirs' in req.body ? String(req.body.wind_dirs || '').split(',').map(x => x.trim().toUpperCase()).filter(x => DIRS.includes(x)).join(',') : f.wind_dirs,
+      str(req.body.phone ?? f.phone, 40), f.id]);
     await changed('revier'); res.json(await db.get('SELECT * FROM features WHERE id = ?', [f.id]));
   }));
   // Protokoll je Kirrung / Kamera / Kanzel (Beschickung, Kartentausch, Kontrolle)

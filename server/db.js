@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS versions (name TEXT PRIMARY KEY, v INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS boundaries (id {{ID}}, name TEXT NOT NULL DEFAULT 'Reviergrenze', geojson TEXT NOT NULL, updated_by INTEGER, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS features (id {{ID}}, kind TEXT NOT NULL, name TEXT NOT NULL, lat DOUBLE PRECISION NOT NULL, lng DOUBLE PRECISION NOT NULL,
-  notes TEXT NOT NULL DEFAULT '', created_by INTEGER, created_at TEXT NOT NULL, interval_days INTEGER, wind_dirs TEXT NOT NULL DEFAULT '');
+  notes TEXT NOT NULL DEFAULT '', created_by INTEGER, created_at TEXT NOT NULL, interval_days INTEGER, wind_dirs TEXT NOT NULL DEFAULT '', phone TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS feature_logs (id {{ID}}, feature_id INTEGER NOT NULL REFERENCES features(id) ON DELETE CASCADE, user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
   kind TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS tasks (id {{ID}}, title TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'sonstiges', feature_id INTEGER REFERENCES features(id) ON DELETE SET NULL,
@@ -92,6 +92,7 @@ async function sqliteAdapter() {
   const featCols = db.prepare('PRAGMA table_info(features)').all().map(c => c.name);
   if (!featCols.includes('interval_days')) db.exec('ALTER TABLE features ADD COLUMN interval_days INTEGER');
   if (!featCols.includes('wind_dirs')) db.exec("ALTER TABLE features ADD COLUMN wind_dirs TEXT NOT NULL DEFAULT ''");
+  if (!featCols.includes('phone')) db.exec("ALTER TABLE features ADD COLUMN phone TEXT NOT NULL DEFAULT ''");
   const plain = rows => rows.map(r => ({ ...r }));
   return {
     dialect: 'sqlite',
@@ -122,6 +123,7 @@ async function pgAdapter(url) {
   await query('ALTER TABLE shots ADD COLUMN IF NOT EXISTS flight_path TEXT', []);
   await query('ALTER TABLE features ADD COLUMN IF NOT EXISTS interval_days INTEGER', []);
   await query("ALTER TABLE features ADD COLUMN IF NOT EXISTS wind_dirs TEXT NOT NULL DEFAULT ''", []);
+  await query("ALTER TABLE features ADD COLUMN IF NOT EXISTS phone TEXT NOT NULL DEFAULT ''", []);
   const q = (s, p) => query(toPg(s), p);
   return {
     dialect: 'pg',

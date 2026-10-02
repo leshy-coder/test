@@ -47,6 +47,7 @@ export async function seedDemo() {
   const ev = await db.insert('INSERT INTO events (title, date, time, place, description, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', ['Hegeringsitzung', new Date(Date.now() + 12 * 86400e3).toISOString().slice(0, 10), '19:30', 'Gasthaus Linde', 'Tagesordnung: Abschussplanung, Trophäenschau-Vorbereitung', hans.id, now()]);
   await db.run('INSERT INTO event_responses (event_id, user_id, status, brings, updated_at) VALUES (?, ?, ?, ?, ?)', [ev, grete.id, 'zusage', 'Beamer', now()]);
 
+  await db.run("INSERT INTO features (kind, name, lat, lng, notes, phone, created_by, created_at) VALUES ('nachbar', ?, ?, ?, ?, ?, ?, ?)", ['Reviernachbar Nord: Jagdpächter Schulze', 50.9665, 10.2080, 'Grenze entlang des Waldwegs; bei Nachsuche vorher anrufen', '0172 9876543', hans.id, now()]);
   await db.run("UPDATE features SET interval_days = 4, wind_dirs = '' WHERE id = ?", [ids['Kirrung Nord']]);
   await db.run("UPDATE features SET interval_days = 14 WHERE id = ?", [ids['Wildkamera Suhle']]);
   await db.run("UPDATE features SET wind_dirs = 'W,SW,NW' WHERE id = ?", [ids['Kanzel Eichenwiese']]);
