@@ -398,6 +398,7 @@ async function loadRevier() {
   if (state.view === 'mehr') renderSettings();
 }
 
+function currentMaxZoom() { const key = localStorage.getItem('layer') || 'topo'; return layers[key]?.options.maxZoom || 18; }
 function markerIcon(kind, cls = '') {
   return L.divIcon({ className: '', html: `<div class="marker ${kind} ${cls}"><span class="ico ico-${kind === 'sonstiges' ? 'locate' : kind}"></span></div>`, iconSize: [36, 36], iconAnchor: [18, 36], popupAnchor: [0, -34] });
 }
@@ -423,11 +424,13 @@ function renderMapFeatures() {
     featureLayer.addLayer(m);
   }
   if (firstFit) {
+    // Startansicht: gespeicherter Mittelpunkt, Zoom = sechstgrößte Stufe der aktuellen Kartenart (maximal minus 5)
     const c = state.revier.center;
-    if (c && c.zoom >= 10) { firstFit = false; map.setView([c.lat, c.lng], c.zoom); }
+    const startZoom = currentMaxZoom() - 5;
+    if (c && c.zoom >= 10) { firstFit = false; map.setView([c.lat, c.lng], startZoom); }
     else {
       const bounds = new L.FeatureGroup([boundaryLayer, featureLayer]).getBounds();
-      if (bounds.isValid()) { firstFit = false; map.fitBounds(bounds.pad(0.15)); }
+      if (bounds.isValid()) { firstFit = false; map.setView(bounds.getCenter(), startZoom); }
     }
   }
   renderCheckinMarkers();

@@ -4,3 +4,5 @@ data/*.db-*
 data/vapid.json
 .env
 .netlify/
+docs/handbuch/img/
+docs/handbuch/handbuch.html
