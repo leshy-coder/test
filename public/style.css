@@ -218,6 +218,31 @@ textarea { min-height: 90px; resize: vertical; }
 .contact .who { flex: 1; } .contact a.btn { text-decoration: none; }
 @media print { .nav, .topbar, .map-toolbar, .toast-wrap { display: none !important; } }
 
+/* Druckansicht in der App */
+#print-view { position: fixed; inset: 0; z-index: 2500; background: #fff; color: #222; overflow: auto; -webkit-overflow-scrolling: touch; font-family: Georgia, serif; }
+#print-view.hidden { display: none; }
+.print-bar { position: sticky; top: 0; display: flex; align-items: center; gap: .6rem; padding: .6rem .8rem; padding-top: calc(.6rem + env(safe-area-inset-top)); background: var(--forest, #1f3a2a); color: #fff; font-family: system-ui, sans-serif; }
+.print-bar .print-title { flex: 1; text-align: center; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.print-doc { padding: 1.2rem 1rem 3rem; max-width: 60rem; margin: 0 auto; }
+.print-doc h1 { font-size: 1.6rem; margin: 0 0 .2rem; color: #222; }
+.print-doc h2 { font-size: 1.1rem; margin: 1.2rem 0 .4rem; color: #222; }
+.print-doc table { border-collapse: collapse; width: 100%; font-size: .95rem; }
+.print-doc th, .print-doc td { border: 1px solid #999; padding: .35rem .5rem; text-align: left; }
+.print-doc th { background: #eee; }
+.print-doc .muted { color: #666; font-size: .85rem; }
+.print-doc .sig { margin-top: 3rem; display: flex; gap: 3rem; }
+.print-doc .sig div { flex: 1; border-top: 1px solid #333; padding-top: .3rem; font-size: .85rem; }
+.print-doc img { max-width: 100%; }
+.print-pics { display: grid; grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr)); gap: .6rem; }
+.print-pics img { width: 100%; border: 1px solid #ccc; page-break-inside: avoid; }
+@media print {
+  body.printing > :not(#print-view) { display: none !important; }
+  body.printing { background: #fff !important; }
+  #print-view { position: static; overflow: visible; }
+  .print-bar { display: none; }
+  .print-doc { padding: 0; max-width: none; }
+}
+
 /* Marker */
 .marker { width: 36px; height: 36px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); border: 2px solid var(--cream); box-shadow: 0 2px 6px rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; }
 .marker .ico { transform: rotate(45deg); width: 18px; height: 18px; background: #fff; }

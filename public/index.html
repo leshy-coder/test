@@ -237,6 +237,12 @@
   <div class="toast-wrap" id="toasts"></div>
 </div>
 
+<!-- Druckansicht (direkt unter body, damit sie im Druck allein sichtbar bleibt) -->
+<section id="print-view" class="hidden" aria-label="Druckansicht">
+  <div class="print-bar"><button class="btn" id="print-close">← Zurück zur App</button><span id="print-title" class="print-title"></span><button class="btn primary" id="print-go">Drucken / PDF</button></div>
+  <div id="print-body" class="print-doc"></div>
+</section>
+
 <script src="/vendor/leaflet/leaflet.js"></script>
 <script src="/vendor/leaflet-draw/leaflet.draw.js"></script>
 <script src="/app.js" type="module"></script>

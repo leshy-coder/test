@@ -1373,11 +1373,27 @@ function renderWindStandsCard() {
 
 // Druck / PDF
 function openPrint(title, bodyHtml) {
-  const w = window.open('', '_blank');
-  if (!w) return toast('Pop-up blockiert – bitte erlauben', 'error');
-  w.document.write(`<!doctype html><html lang="de"><head><meta charset="utf-8"><title>${esc(title)}</title><style>body{font-family:Georgia,serif;margin:2cm;color:#222}h1{font-size:1.6rem;margin:0 0 .2rem}h2{font-size:1.1rem;margin:1.2rem 0 .4rem}table{border-collapse:collapse;width:100%;font-size:.95rem}th,td{border:1px solid #999;padding:.35rem .5rem;text-align:left}th{background:#eee}.muted{color:#666;font-size:.85rem}.sig{margin-top:3rem;display:flex;gap:3rem}.sig div{flex:1;border-top:1px solid #333;padding-top:.3rem;font-size:.85rem}@media print{button{display:none}}</style></head><body>${bodyHtml}<p class="muted">Erstellt mit RevierApp am ${fmtDT(new Date().toISOString())}</p><button onclick="print()">Drucken / als PDF speichern</button></body></html>`);
-  w.document.close(); setTimeout(() => { try { w.print(); } catch {} }, 400);
+  // Druckansicht innerhalb der App (kein neues Fenster: auf dem iPhone als Web-App gäbe es sonst keinen Weg zurück)
+  const view = $('#print-view');
+  $('#print-title').textContent = title;
+  $('#print-body').innerHTML = `${bodyHtml}<p class="muted">Erstellt mit RevierApp am ${fmtDT(new Date().toISOString())}</p>`;
+  view.classList.remove('hidden'); document.body.classList.add('printing'); window.scrollTo(0, 0);
+  if (!history.state?.print) history.pushState({ print: 1 }, '', location.href);
 }
+function closePrint(fromHistory) {
+  const view = $('#print-view');
+  if (view.classList.contains('hidden')) return;
+  view.classList.add('hidden'); document.body.classList.remove('printing');
+  if (!fromHistory && history.state?.print) history.back();
+}
+function printNow() {
+  const standalone = navigator.standalone || matchMedia('(display-mode: standalone)').matches;
+  try { window.print(); } catch {}
+  if (standalone) setTimeout(() => toast('Kein Druckdialog? Dann die App im Browser (Safari/Chrome) öffnen und dort drucken bzw. als PDF teilen'), 1500);
+}
+window.addEventListener('popstate', () => closePrint(true));
+$('#print-close').onclick = () => closePrint(false);
+$('#print-go').onclick = printNow;
 function printHuntBag(h) {
   const rows = h.bag.map(b => `<tr><td>${esc(b.species)}</td><td>${b.count}</td><td>${esc(b.shooter)}</td><td>${esc(b.notes)}</td></tr>`).join('');
   openPrint(`Streckenmeldung ${h.title}`, `<h1>Streckenmeldung</h1><div class="muted">${esc(state.revier.name)}</div>
@@ -1401,6 +1417,10 @@ function printIncident(i) {
     ${i.kind === 'wildschaden' ? `<tr><th>Kultur</th><td>${esc(i.crop || '–')}</td></tr><tr><th>Landwirt</th><td>${esc(i.farmer || '–')}</td></tr><tr><th>Fläche</th><td>${i.area_ha ? i.area_ha + ' ha' : '–'}</td></tr>` : `<tr><th>Straße</th><td>${esc(i.road || '–')}</td></tr><tr><th>Polizei-Aktenzeichen</th><td>${esc(i.police_ref || '–')}</td></tr>`}
     <tr><th>Status</th><td>${esc(i.status)}</td></tr><tr><th>Gemeldet von</th><td>${esc(i.user_name || '')}</td></tr><tr><th>Beschreibung</th><td>${esc(i.note || '–')}</td></tr></table>
     <div id="pics"></div><div class="sig"><div>Jagdausübungsberechtigter</div><div>${i.kind === 'wildschaden' ? 'Landwirt / Geschädigter' : 'Datum, Unterschrift'}</div></div>`);
+  api(`/api/incidents/${i.id}/photos`).then(photos => {
+    const pics = $('#pics'); if (!pics || !photos.length) return;
+    pics.innerHTML = `<h2>Fotos (${photos.length})</h2><div class="print-pics">${photos.map(p => `<img src="${p.data}" alt="Foto">`).join('')}</div>`;
+  }).catch(() => {});
 }
 function quotaRows(hv) {
   const counts = {};

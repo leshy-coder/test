@@ -148,7 +148,7 @@ ${img('faehrte-dialog', 'Fährte melden.')}
 ${img2('anschuss-dialog', 'Anschuss markieren mit Pirschzeichen und Fotos.', 'anschuss-popup', 'Popup mit Status, Fluchtweg, Aufzeichnung und Anruf-Knöpfen.')}
 ${img('fluchtweg', 'Fluchtweg Punkt für Punkt setzen und bearbeiten.')}
 <h3>Wildunfall und Wildschaden</h3>
-<p>Werkzeug <b>Unfall</b> (Straße, Polizei-Aktenzeichen) oder <b>Schaden</b> (Kultur, Landwirt, geschädigte Fläche in Hektar), jeweils mit Fotos. Der Status (gemeldet, besichtigt, reguliert, erledigt) wird im Popup gesetzt. „PDF“ erzeugt ein Protokoll für Polizei, Versicherung oder Landwirt. Alle Meldungen stehen gesammelt unter Mehr → Wildunfälle &amp; Wildschäden.</p>
+<p>Werkzeug <b>Unfall</b> (Straße, Polizei-Aktenzeichen) oder <b>Schaden</b> (Kultur, Landwirt, geschädigte Fläche in Hektar), jeweils mit Fotos. Der Status (gemeldet, besichtigt, reguliert, erledigt) wird im Popup gesetzt. „PDF“ öffnet die Druckansicht mit dem Protokoll für Polizei, Versicherung oder Landwirt (inklusive Fotos); „Drucken / PDF“ startet den Druck- bzw. Teilen-Dialog, „Zurück zur App“ schließt die Ansicht wieder. Alle Meldungen stehen gesammelt unter Mehr → Wildunfälle &amp; Wildschäden.</p>
 ${img('schaden-dialog', 'Wildschaden dokumentieren.')}
 <h3>Weitere Kartenfunktionen</h3>
 <ul><li><b>Windpfeil</b> unten links zeigt Richtung, Stärke und Böen; ein Tipp öffnet das Wetter.</li>
